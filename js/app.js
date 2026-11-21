@@ -585,8 +585,8 @@ async function toggleRecording(name) {
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch { toast('Microphone access was blocked. Allow it in the browser address bar and try again.', { err: true }); return; }
-  const mime = // AAC in MP4 first: it plays everywhere, including iPhone and Google Drive's previewer.
-  ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported?.(t)) || '';
+  // AAC in MP4 first: it plays everywhere, including iPhone and Google Drive's previewer.
+  const mime = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported?.(t)) || '';
   const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
   const chunks = [];
   recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
