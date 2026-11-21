@@ -3,7 +3,8 @@
  * Paste this into Extensions → Apps Script of the Master Project Tracker sheet.
  *
  * It does three things for the dashboard:
- *   GET  ?action=read&token=…      → projects (Tab 1), recent log (Tab 2), voice-note links
+ *   GET  ?action=read&token=…      → projects (Tab 1), recent log (Tab 2), voice-note list
+ *   GET  ?action=audio&id=…&token=… → one voice note's audio (base64) for in-app playback
  *   POST {action:'status', …}      → writes ONLY column E (Current Status) of one project row
  *   POST {action:'voice', …}       → saves an audio file to Drive:
  *                                    Al-Marfat/Project Voice Notes/<Project Name>/
@@ -29,6 +30,7 @@ function doGet(e) {
     const action = e.parameter.action || 'read';
     if (action === 'read') return read_();
     if (action === 'ping') return { ok: true };
+    if (action === 'audio') return audio_(e.parameter.id);
     throw new Error('Unknown action: ' + action);
   });
 }
@@ -102,7 +104,7 @@ function listVoiceNotes_() {
     const it = f.getFiles();
     while (it.hasNext()) {
       const file = it.next();
-      files.push({ name: file.getName(), url: file.getUrl(), created: file.getDateCreated().toISOString() });
+      files.push({ id: file.getId(), name: file.getName(), url: file.getUrl(), mime: file.getMimeType(), created: file.getDateCreated().toISOString() });
     }
     files.sort((a, b) => b.created.localeCompare(a.created));
     if (files.length) out[f.getName()] = files.slice(0, 10);
@@ -135,11 +137,35 @@ function saveVoice_(project, mime, base64) {
   if (!project || !base64) throw new Error('Missing project or audio');
   const safe = String(project).replace(/[\\/:*?"<>|]/g, '-').trim();
   const folder = findFolder_(VOICE_ROOT.concat([safe]), true);
-  const ext = /mp4|m4a|aac/.test(mime || '') ? 'm4a' : /ogg/.test(mime || '') ? 'ogg' : 'webm';
+  // Drop codec parameters (e.g. "audio/mp4;codecs=mp4a.40.2"): Drive and iPhone players choke on them.
+  const base = String(mime || 'audio/webm').split(';')[0].trim().toLowerCase();
+  const isMp4 = /mp4|m4a|aac/.test(base);
+  const type = isMp4 ? 'audio/mp4' : /ogg/.test(base) ? 'audio/ogg' : 'audio/webm';
+  const ext = isMp4 ? 'm4a' : /ogg/.test(base) ? 'ogg' : 'webm';
   const name = safe + ' — ' + Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HHmm') + '.' + ext;
-  const blob = Utilities.newBlob(Utilities.base64Decode(base64), mime || 'audio/webm', name);
+  const blob = Utilities.newBlob(Utilities.base64Decode(base64), type, name);
   const file = folder.createFile(blob);
-  return { ok: true, name: file.getName(), url: file.getUrl(), created: file.getDateCreated().toISOString() };
+  return { ok: true, id: file.getId(), name: file.getName(), url: file.getUrl(), mime: type, created: file.getDateCreated().toISOString() };
+}
+
+// ---------- read: one voice note ----------
+
+function audio_(id) {
+  if (!id) throw new Error('Missing file id');
+  const file = DriveApp.getFileById(id);
+  // Only serve files that live in Al-Marfat/Project Voice Notes/<Project>/
+  const parents = file.getParents();
+  let allowed = false;
+  while (parents.hasNext()) {
+    const p = parents.next();
+    const gp = p.getParents();
+    while (gp.hasNext()) if (gp.next().getName() === VOICE_ROOT[VOICE_ROOT.length - 1]) allowed = true;
+  }
+  if (!allowed) throw new Error('Not a project voice note');
+  const blob = file.getBlob();
+  let mime = String(blob.getContentType() || '').split(';')[0];
+  if (/\.m4a$/i.test(file.getName())) mime = 'audio/mp4';
+  return { ok: true, mime: mime || 'audio/webm', data: Utilities.base64Encode(blob.getBytes()) };
 }
 
 // ---------- helpers ----------

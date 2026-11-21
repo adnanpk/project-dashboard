@@ -28,6 +28,9 @@ const state = {
   filters: Object.assign({ q: '', category: '', priority: [], today: false, completed: false, sort: 'priority' }, store.get('filters', {}), { q: '' }),
   settings: Object.assign({ url: DEFAULT_URL, token: '', auto: true }, store.get('settings', {})),
   focus: null,
+  group: null,       // overview → group drill-down (hash #g=active)
+  audio: {},         // file id → { url, status: 'loading'|'ready'|'error', msg }
+  playing: null,     // file id currently shown in the player
   rec: null,
   saving: new Set(),
 };
@@ -139,6 +142,9 @@ const icons = {
   play: '<svg viewBox="0 0 20 20"><path d="M7 5.5v9l7-4.5-7-4.5Z"/></svg>',
   close: '<svg viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15"/></svg>',
   check: '<svg viewBox="0 0 20 20"><path d="m5 10.5 3 3 7-7"/></svg>',
+  dots: '<svg viewBox="0 0 20 20"><circle cx="5" cy="10" r="1.3" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1.3" fill="currentColor" stroke="none"/></svg>',
+  back: '<svg viewBox="0 0 20 20"><path d="M12 15 7 10l5-5"/></svg>',
+  chev: '<svg viewBox="0 0 20 20"><path d="m8 5 5 5-5 5"/></svg>',
 };
 
 function statusChip(p) {
@@ -167,9 +173,12 @@ function micButton(p, big = false) {
 function latestVoice(p) {
   const v = p.voice[0];
   if (!v) return '';
-  return `<a class="voice-link" href="${attr(v.url)}" target="_blank" rel="noopener" data-stop title="${attr(v.name)}">${icons.play}Note${p.voice.length > 1 ? ` · ${p.voice.length}` : ''}</a>`;
+  return `<button class="voice-link" data-play-latest="${attr(p.name)}" title="Play the latest voice note">${icons.play}Note${p.voice.length > 1 ? ` · ${p.voice.length}` : ''}</button>`;
 }
 
+function menuButton(p) {
+  return `<button class="icon-btn card-menu" data-menu="${attr(p.name)}" aria-label="${attr('Actions for ' + p.name)}" aria-haspopup="menu" title="Move or other actions">${icons.dots}</button>`;
+}
 function card(p, { draggable = false, compact = false } = {}) {
   const weekPct = p.weekGoal ? Math.min(100, (p.week / p.weekGoal) * 100) : 0;
   const nextEmpty = !p.nextAction || p.nextAction === '—';
@@ -180,6 +189,7 @@ function card(p, { draggable = false, compact = false } = {}) {
         <div class="card-meta"><span>${esc(p.category || 'Uncategorised')}</span><span class="dot">${esc(p.priority || '—')}</span></div>
       </div>
       ${ring(p)}
+      ${menuButton(p)}
     </div>
     <div class="chips">${statusChip(p)}${slotChip(p)}${dueChip(p)}</div>
     <div class="actions-block">
@@ -187,6 +197,7 @@ function card(p, { draggable = false, compact = false } = {}) {
       ${p.lastAction && !compact ? `<div><div class="act-label">Last done</div><div class="act-text">${esc(p.lastAction)}</div></div>` : ''}
     </div>
     <div class="card-foot">
+      ${p.daily ? `<span class="tile-mins ${p.ring}">${p.minsToday}/${p.goal}m</span>` : ''}
       ${p.daily ? `<div class="week"><div class="week-head"><span>This week</span><span class="tnum">${p.week} / ${p.weekGoal} min</span></div><div class="bar ${weekPct >= 100 ? 'green' : ''}"><i style="width:${weekPct}%"></i></div></div>` : '<div class="week"></div>'}
       ${latestVoice(p)}
       ${micButton(p)}
@@ -195,18 +206,52 @@ function card(p, { draggable = false, compact = false } = {}) {
 }
 
 // ---------- views ----------
+const GROUPS = [
+  { key: 'active', label: 'Active daily', color: 'green', match: p => p.st.key === 'active' },
+  { key: 'overdue', label: 'Overdue', color: 'red', match: p => p.overdue },
+  { key: 'waiting', label: 'Waiting', color: 'blue', match: p => p.st.key === 'waiting' },
+  { key: 'hold', label: 'On hold', color: 'amber', match: p => p.st.key === 'hold' },
+  { key: 'done', label: 'Completed', color: 'grey', match: p => p.st.key === 'done' },
+];
+
 function viewBoard(list) {
   const all = applyFilters(list, { ignoreCompleted: true });
-  return `<div class="board">${STATUSES.map(s => {
-    let items = sortList(all.filter(p => p.st.key === s.key), 'priority');
-    const hidden = s.key === 'done' && !state.filters.completed;
-    return `<section class="col" data-col="${s.value}" aria-label="${s.label}">
-      <div class="col-head"><span class="chip ${s.color === 'grey' ? '' : s.color}" style="padding:0;background:none"><i class="status-dot"></i></span>${s.label}<span class="count">${items.length}</span></div>
-      ${hidden ? `<div class="col-empty">${items.length} completed hidden. <button class="btn ghost" style="height:28px;margin-top:8px" data-show-completed>Show completed</button></div>`
-        : items.length ? items.map(p => card(p, { draggable: true, compact: true })).join('') : '<div class="col-empty">Drag a project here to move it.</div>'}
-    </section>`;
+  const g = GROUPS.find(x => x.key === state.group);
+  if (g) {
+    const items = sortList(all.filter(g.match), state.filters.sort);
+    return `<div class="group-head">
+        <button class="btn ghost back" data-group="">${icons.back}Overview</button>
+        <h2><i class="status-dot ${g.color}"></i>${g.label}<span class="count tnum">${items.length}</span></h2>
+      </div>
+      ${items.length ? `<div class="tiles">${items.map(p => card(p, { compact: true })).join('')}</div>`
+        : `<div class="empty"><h2>Nothing here</h2><p>${state.filters.q || state.filters.category || state.filters.priority.length || state.filters.today ? 'No projects in this group match your filters.' : 'No projects are in this group right now.'}</p></div>`}`;
+  }
+  return `<div class="overview">${GROUPS.map(g => {
+    const items = sortList(all.filter(g.match), 'priority');
+    const daily = g.key === 'active' ? items : [];
+    const goal = daily.reduce((s, p) => s + p.goal, 0), got = daily.reduce((s, p) => s + Math.min(p.minsToday, p.goal), 0);
+    const doneToday = daily.filter(p => p.minsToday >= p.goal).length;
+    const sub = g.key === 'active' ? `${doneToday} of ${items.length} done today`
+      : g.key === 'overdue' ? (items.length ? 'Past their due date' : 'Nothing overdue')
+      : g.key === 'done' ? 'Archived' : g.key === 'waiting' ? 'Blocked on someone else' : 'Paused';
+    return `<button class="group-tile g-${g.key}" data-group="${g.key}" aria-label="${attr(`${g.label}, ${items.length} projects`)}">
+      <div class="gt-top"><span class="gt-label"><i class="status-dot ${g.color}"></i>${g.label}</span>${icons.chev}</div>
+      <div class="gt-count tnum ${g.key === 'overdue' && items.length ? 'red' : ''}">${items.length}</div>
+      <div class="gt-sub">${sub}</div>
+      ${g.key === 'active' && goal ? `<div class="bar ${got >= goal ? 'green' : ''}"><i style="width:${(got / goal) * 100}%"></i></div>` : ''}
+      <ul class="gt-list">${items.slice(0, 4).map(p => `<li>${p.ring ? `<i class="mini-dot ${p.ring}"></i>` : ''}<span>${esc(p.name)}</span></li>`).join('')}${items.length > 4 ? `<li class="more">+${items.length - 4} more</li>` : ''}</ul>
+    </button>`;
   }).join('')}</div>`;
 }
+
+function setGroup(key) {
+  state.group = key || null;
+  const h = key ? '#g=' + key : '';
+  if (location.hash !== h) history.pushState(null, '', h || location.pathname + location.search);
+  render();
+  window.scrollTo(0, 0);
+}
+function groupFromHash() { const m = location.hash.match(/g=(\w+)/); return m && GROUPS.some(g => g.key === m[1]) ? m[1] : null; }
 
 function viewGrid(list) {
   const items = sortList(applyFilters(list));
@@ -358,6 +403,8 @@ function renderFocus(list = derive()) {
   const isDone = p.st.key === 'done';
   const nextEmpty = !p.nextAction || p.nextAction === '—';
   const scrollTop = el.querySelector('.focus-body')?.scrollTop || 0;
+  const liveAudio = el.querySelector('audio');
+  if (liveAudio) liveAudio.remove();
   el.innerHTML = `
     <div class="focus-head"><span class="crumb">${esc(p.id || '')} · Focus</span>
       <button class="icon-btn" data-close-focus aria-label="Close focus mode" title="Close (Esc)">${icons.close}</button></div>
@@ -365,19 +412,64 @@ function renderFocus(list = derive()) {
       <div class="focus-hero">${ring(p, 'lg')}
         <div class="grow"><h2 id="focus-title">${esc(p.name)}</h2>
           <div class="chips">${statusChip(p)}<span class="chip outline">${esc(p.priority || '—')}</span><span class="chip outline">${esc(p.category || '')}</span>${slotChip(p)}${dueChip(p)}</div></div></div>
+      <div class="move-row">
+        <label for="move-select">Move to</label>
+        <select id="move-select" data-move="${attr(p.name)}" ${saving ? 'disabled' : ''}>${STATUSES.map(s => `<option value="${attr(s.value)}" ${p.st.key === s.key ? 'selected' : ''}>${s.label}</option>`).join('')}</select>
+        <button class="btn ${isDone ? '' : 'primary'}" data-set-status="${isDone ? 'Active - Daily' : 'Completed'}" ${saving ? 'disabled' : ''}>${icons.check}${saving ? 'Saving…' : isDone ? 'Reopen' : 'Mark completed'}</button>
+      </div>
       <div class="focus-next"><div class="act-label">Next action</div><p class="${nextEmpty ? 'act-text empty' : ''}">${nextEmpty ? 'No next action set' : esc(p.nextAction)}</p>
         ${p.lastAction ? `<div class="last"><div class="act-label">Last completed</div>${esc(p.lastAction)}</div>` : ''}</div>
-      <section class="focus-sec"><h4>Voice notes <span>${p.voice.length || ''}</span></h4>
+      <section class="focus-sec" id="voice-sec"><h4>Voice notes <span>${p.voice.length || ''}</span></h4>
         ${micButton(p, true)}
-        ${p.voice.length ? `<div class="voice-list" style="margin-top:12px">${p.voice.map(v => `<a href="${attr(v.url)}" target="_blank" rel="noopener">${icons.play}<span>${esc(v.name)}</span><small>${new Date(v.created).toLocaleString('en-GB', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></a>`).join('')}</div>` : ''}</section>
+        ${p.voice.length ? `<div class="voice-list" style="margin-top:12px">${p.voice.map(v => voiceRow(v)).join('')}</div>` : ''}</section>
       ${p.daily ? `<section class="focus-sec"><h4>Last 7 days <span class="tnum">${p.week} / ${p.weekGoal} min</span></h4><div class="week-chart">${chart}</div></section>` : ''}
       <section class="focus-sec"><h4>Recent log <span>${p.entries.length ? 'last 30 days' : ''}</span></h4>
         ${p.entries.length ? `<div class="log-list">${p.entries.slice(0, 10).map(e => `<div class="log-item"><time>${fmtDate(e.date, { day: 'numeric', month: 'short' })}</time><div><p>${esc(e.work || '—')}</p>${e.next ? `<p>Next: ${esc(e.next)}</p>` : ''}</div><span class="m">${e.minutes} min</span></div>`).join('')}</div>` : '<div class="muted-box">No log entries in the last 30 days.</div>'}</section>
-      <section class="focus-sec"><h4>Status <span>Writes column E in the sheet</span></h4>
-        <div class="status-picker" role="group" aria-label="Set status">${STATUSES.map(s => `<button data-set-status="${attr(s.value)}" aria-pressed="${p.st.key === s.key}" ${saving ? 'disabled' : ''}><span class="chip ${s.color === 'grey' ? '' : s.color}" style="padding:0;height:auto;background:none"><i class="status-dot"></i></span>${s.label}</button>`).join('')}</div>
-        <div style="margin-top:12px"><button class="btn ${isDone ? '' : 'primary'}" data-set-status="${isDone ? 'Active - Daily' : 'Completed'}" ${saving ? 'disabled' : ''}>${icons.check}${saving ? 'Saving…' : isDone ? 'Reopen as active daily' : 'Mark completed and archive'}</button></div></section>
     </div>`;
   el.querySelector('.focus-body').scrollTop = scrollTop;
+  const slot = liveAudio && el.querySelector(`[data-player="${liveAudio.dataset.id}"]`);
+  if (slot) slot.replaceChildren(liveAudio);
+  else mountPlayer();
+}
+
+// ---------- in-app voice playback ----------
+function fmtWhen(iso) { return new Date(iso).toLocaleString('en-GB', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+function voiceRow(v) {
+  const a = v.id ? state.audio[v.id] : null;
+  const open = v.id && state.playing === v.id;
+  const status = !v.id ? '' : a?.status === 'loading' ? '<small>Loading…</small>' : a?.status === 'error' ? `<small class="err">${esc(a.msg)}</small>` : '';
+  return `<div class="voice-row ${open ? 'open' : ''}">
+    <button class="voice-play" ${v.id ? `data-play="${attr(v.id)}"` : 'disabled'} aria-label="${attr('Play ' + v.name)}">${icons.play}<span class="vn">${esc(fmtWhen(v.created))}</span>${status}</button>
+    <a class="voice-drive" href="${attr(v.url)}" target="_blank" rel="noopener" title="Open in Google Drive">Drive</a>
+    ${open ? `<div class="voice-player" data-player="${attr(v.id)}"></div>` : ''}
+  </div>`;
+}
+function mountPlayer() {
+  const id = state.playing, a = id && state.audio[id];
+  const slot = id && document.querySelector(`#focus [data-player="${id}"]`);
+  if (!slot || !a || a.status !== 'ready' || slot.querySelector('audio')) return;
+  const el = document.createElement('audio');
+  el.controls = true; el.preload = 'auto'; el.dataset.id = id; el.src = a.url;
+  el.onerror = () => { state.audio[id] = { status: 'error', msg: "This browser can't play this recording's format." }; state.playing = null; renderFocus(); };
+  slot.replaceChildren(el);
+  el.play().catch(() => {}); // iPhone may need a tap on the player's own play button
+}
+async function playVoice(id) {
+  if (state.playing === id && document.querySelector('#focus audio')) { const el = document.querySelector('#focus audio'); el.paused ? el.play().catch(() => {}) : el.pause(); return; }
+  document.querySelector('#focus audio')?.pause();
+  state.playing = id;
+  if (!state.audio[id] || state.audio[id].status === 'error') {
+    state.audio[id] = { status: 'loading' }; renderFocus();
+    try {
+      const { mime, data } = await apiAudio(id);
+      const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+      state.audio[id] = { status: 'ready', url: URL.createObjectURL(new Blob([bytes], { type: mime })) };
+    } catch (e) {
+      state.audio[id] = { status: 'error', msg: /Unknown action/.test(e.message) ? 'Update the Apps Script to play notes here (see setup guide).' : "Couldn't load this note." };
+      state.playing = null;
+    }
+  }
+  renderFocus();
 }
 
 let lastOpener = null;
@@ -418,8 +510,16 @@ async function apiRead(settings = state.settings) {
   if (!json.ok) throw new Error(json.error === 'Wrong passcode' ? "That passcode doesn't match DASHBOARD_TOKEN in Script properties." : json.error || 'Unknown error from Apps Script');
   return json;
 }
+async function apiAudio(id) {
+  if (mock) throw new Error('No audio in sample mode');
+  const s = state.settings;
+  const res = await fetch(`${s.url}?action=audio&id=${encodeURIComponent(id)}&token=${encodeURIComponent(s.token)}`);
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || 'Could not load audio');
+  return json;
+}
 async function apiPost(body) {
-  if (mock) { await new Promise(r => setTimeout(r, 400)); return body.action === 'voice' ? { ok: true, name: `${body.project} — test.webm`, url: '#', created: new Date().toISOString() } : { ok: true }; }
+  if (mock) { await new Promise(r => setTimeout(r, 400)); return body.action === 'voice' ? { ok: true, id: 'mock' + Date.now(), name: `${body.project} — test.webm`, url: '#', created: new Date().toISOString() } : { ok: true }; }
   const res = await fetch(state.settings.url, { method: 'POST', body: JSON.stringify(Object.assign({ token: state.settings.token }, body)) });
   const json = await res.json();
   if (!json.ok) throw new Error(json.error || 'Write failed');
@@ -501,8 +601,9 @@ async function toggleRecording(name) {
       const file = await apiPost({ action: 'voice', project: name, mime: blob.type, data });
       const key = safeFolder(name);
       state.data.voiceNotes ||= {};
-      (state.data.voiceNotes[key] ||= []).unshift({ name: file.name, url: file.url, created: file.created });
-      toast(`Voice note saved to Drive for ${name}.`, { action: 'Open', onAction: () => window.open(file.url, '_blank', 'noopener') });
+      (state.data.voiceNotes[key] ||= []).unshift({ id: file.id, name: file.name, url: file.url, created: file.created });
+      if (file.id) state.audio[file.id] = { status: 'ready', url: URL.createObjectURL(blob) };
+      toast(`Voice note saved for ${name}.`, file.id ? { action: 'Play', onAction: () => { if (state.focus !== name) openFocus(name); playVoice(file.id); } } : {});
     } catch (e) {
       toast(`Couldn't save the voice note. ${e.message}`, { err: true });
     } finally {
@@ -550,6 +651,21 @@ function bind() {
   document.addEventListener('click', e => {
     const t = e.target;
     if (t.closest('[data-stop]')) { e.stopPropagation(); return; }
+    const mi = t.closest('#menu [data-menu-status]');
+    if (mi) { const n = menuFor; closeMenu(); setStatus(n, mi.dataset.menuStatus); return; }
+    const mo = t.closest('#menu [data-menu-open]');
+    if (mo) { const n = menuFor; closeMenu(); openFocus(n); return; }
+    const mr = t.closest('#menu [data-menu-rec]');
+    if (mr) { const n = menuFor; closeMenu(); toggleRecording(n); return; }
+    if (menuFor && !t.closest('#menu')) { const same = t.closest('[data-menu]')?.dataset.menu === menuFor; closeMenu(); if (same) return; }
+    const mb = t.closest('[data-menu]');
+    if (mb) { openMenu(mb.dataset.menu, mb); return; }
+    const pl = t.closest('[data-play]');
+    if (pl) { playVoice(pl.dataset.play); return; }
+    const pll = t.closest('[data-play-latest]');
+    if (pll) { const name = pll.dataset.playLatest; openFocus(name, pll); const v = derive().find(x => x.name === name)?.voice[0]; if (v?.id) playVoice(v.id); $('#voice-sec')?.scrollIntoView({ block: 'start' }); return; }
+    const gb = t.closest('[data-group]');
+    if (gb) { setGroup(gb.dataset.group); return; }
     const mic = t.closest('[data-mic]');
     if (mic) { e.stopPropagation(); toggleRecording(mic.dataset.mic); return; }
     const ss = t.closest('[data-set-status]');
@@ -561,10 +677,14 @@ function bind() {
     const open = t.closest('[data-open]');
     if (open && !justDragged) { openFocus(open.dataset.open, open); return; }
     const v = t.closest('.views button');
-    if (v) { state.view = v.dataset.view; store.set('view', state.view); render(); return; }
+    if (v) { state.view = v.dataset.view; store.set('view', state.view); if (v.dataset.view === 'board' && state.group) { setGroup(null); return; } render(); return; }
     const pb = t.closest('#f-priority button');
     if (pb) { const f = state.filters.priority; const i = f.indexOf(pb.dataset.p); i < 0 ? f.push(pb.dataset.p) : f.splice(i, 1); saveFilters(); }
   });
+  document.addEventListener('change', e => { if (e.target.matches('#move-select')) setStatus(e.target.dataset.move, e.target.value); });
+  window.addEventListener('popstate', () => { state.group = groupFromHash(); render(); });
+  window.addEventListener('resize', closeMenu);
+  document.addEventListener('scroll', closeMenu, true);
   $('#scrim').addEventListener('click', () => { if (!$('#settings').hidden) closeSettings(); else closeFocus(); });
   $('#btn-refresh').onclick = () => refresh();
   $('#btn-theme').onclick = toggleTheme;
@@ -623,6 +743,7 @@ function bind() {
   document.addEventListener('keydown', e => {
     const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
     const overlay = !$('#focus').hidden ? $('#focus') : !$('#settings').hidden ? $('#settings') : null;
+    if (e.key === 'Escape' && menuFor) { closeMenu(true); return; }
     if (e.key === 'Escape') { if (!$('#settings').hidden) closeSettings(); else if (state.focus) closeFocus(); else if (document.activeElement === $('#f-search')) $('#f-search').blur(); return; }
     if (e.key === 'Tab' && overlay) {
       const f = [...overlay.querySelectorAll('button:not([disabled]), a[href], input, select, [tabindex="0"]')].filter(x => x.offsetParent);
@@ -645,6 +766,33 @@ function bind() {
   setInterval(() => { if (state.data && !state.rec) render(); }, 60 * 1000); // keep "now" line and dates current
 }
 
+// ---------- card action menu ----------
+let menuFor = null, menuOpener = null;
+function openMenu(name, btn) {
+  const p = derive().find(x => x.name === name); if (!p) return;
+  menuFor = name; menuOpener = btn;
+  const m = $('#menu');
+  m.innerHTML = `<div class="menu-label">Move to</div>
+    ${STATUSES.map(s => `<button role="menuitem" data-menu-status="${attr(s.value)}" ${p.st.key === s.key ? 'aria-current="true" disabled' : ''}><i class="status-dot ${s.color}"></i>${s.label}${p.st.key === s.key ? `<span class="cur">${icons.check}</span>` : ''}</button>`).join('')}
+    <hr>
+    <button role="menuitem" data-menu-rec>${icons.mic}${state.rec?.project === name ? 'Stop recording' : 'Record voice note'}</button>
+    <button role="menuitem" data-menu-open>${icons.chev}Open details</button>`;
+  m.hidden = false;
+  const r = btn.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
+  let left = Math.min(Math.max(8, r.right - mw), innerWidth - mw - 8);
+  let top = r.bottom + 6; if (top + mh > innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  m.style.left = left + 'px'; m.style.top = top + 'px';
+  btn.setAttribute('aria-expanded', 'true');
+  m.querySelector('button:not([disabled])')?.focus({ preventScroll: true });
+}
+function closeMenu(restore) {
+  if (!menuFor) return;
+  menuFor = null; $('#menu').hidden = true;
+  menuOpener?.setAttribute('aria-expanded', 'false');
+  if (restore === true) menuOpener?.focus();
+}
+
+state.group = groupFromHash();
 bind();
 schedule();
 refresh();
