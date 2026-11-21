@@ -39,9 +39,9 @@ Also make sure the sheet itself uses Riyadh time: in the sheet, **File → Setti
 ## 4. Connect the dashboard
 
 1. Open https://adnanpk.github.io/project-dashboard/
-2. Paste the Web app URL and your passcode, then click **Connect**.
+2. Enter your passcode and click **Sign in**. (The Web app URL is built into the page; if you ever redeploy to a new URL, paste it under "Use a different Apps Script URL".)
 
-The URL and passcode are saved only in that browser. Repeat this step on each device (phone, laptop). Use **Settings → Disconnect this browser** to remove them.
+The URL and passcode are saved only in that browser. Repeat this step on each device (phone, laptop). Use **Settings (gear icon) → Sign out** to remove them.
 
 ## What the dashboard can change
 

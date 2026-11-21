@@ -1,5 +1,7 @@
 // Project Dashboard — reads the Master Project Tracker through an Apps Script web app.
 const TZ = 'Asia/Riyadh';
+// The Apps Script web app for the Master Project Tracker. Not secret: every request also needs the passcode.
+const DEFAULT_URL = 'https://script.google.com/macros/s/AKfycbzbjQXeJdfpKUuH4poh_AZ90A0awVHxe58Lc_jLUgoeuwiO1oDN6sK6cRNZNMDAuUgg/exec';
 const REFRESH_MS = 5 * 60 * 1000;
 const MAX_REC_MS = 5 * 60 * 1000;
 const STATUSES = [
@@ -24,7 +26,7 @@ const state = {
   error: null,
   view: store.get('view', 'board'),
   filters: Object.assign({ q: '', category: '', priority: [], today: false, completed: false, sort: 'priority' }, store.get('filters', {}), { q: '' }),
-  settings: Object.assign({ url: '', token: '', auto: true }, store.get('settings', {})),
+  settings: Object.assign({ url: DEFAULT_URL, token: '', auto: true }, store.get('settings', {})),
   focus: null,
   rec: null,
   saving: new Set(),
@@ -264,14 +266,15 @@ function emptyFiltered() {
 
 function viewLock() {
   const s = state.settings;
+  const custom = s.url && s.url !== DEFAULT_URL;
   return `<div class="lock">
-    <div><h2>Connect your tracker</h2><p style="margin-top:6px">Enter your Apps Script URL and passcode. Nothing loads until both are correct, and they're kept only in this browser.</p></div>
+    <div><h2>Sign in</h2><p style="margin-top:6px">Enter your dashboard passcode. It's kept only in this browser until you sign out.</p></div>
     <form id="lock-form">
-      <div class="field"><label for="l-url">Apps Script web app URL</label><input id="l-url" type="url" required spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec" value="${attr(s.url)}"></div>
-      <div class="field"><label for="l-token">Passcode</label><input id="l-token" type="password" required autocomplete="current-password" value="${attr(s.token)}"></div>
+      <div class="field"><label for="l-token">Passcode</label><input id="l-token" type="password" required autocomplete="current-password" autofocus value="${attr(s.token)}"></div>
+      <details class="adv" ${custom ? 'open' : ''}><summary>Use a different Apps Script URL</summary>
+        <div class="field" style="margin-top:10px"><label for="l-url">Apps Script web app URL</label><input id="l-url" type="url" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec" value="${attr(s.url || DEFAULT_URL)}"></div></details>
       <p class="field-error" id="l-error" role="alert">${esc(state.error || '')}</p>
-      <div><button class="btn primary" type="submit" ${state.loading ? 'disabled' : ''}>${state.loading ? 'Connecting…' : 'Connect'}</button></div>
-      <p class="hint">First time? Follow the <a href="https://github.com/adnanpk/project-dashboard/blob/main/SETUP.md" target="_blank" rel="noopener">setup guide</a>.</p>
+      <div><button class="btn primary" type="submit" ${state.loading ? 'disabled' : ''}>${state.loading ? 'Signing in…' : 'Sign in'}</button></div>
     </form></div>`;
 }
 
@@ -316,6 +319,7 @@ function render() {
   const locked = !state.data;
   document.body.classList.toggle('locked', locked);
   $('.toolbar').hidden = locked;
+  $('#btn-signout').hidden = locked; $('#btn-refresh').hidden = locked;
   $('#stats').hidden = locked;
   if (locked) {
     if (state.loading && state.settings.url && state.settings.token && !state.error) {
@@ -325,7 +329,7 @@ function render() {
     } else {
       $('#l-error').textContent = state.error || '';
       const b = $('#lock-form button[type=submit]');
-      b.disabled = state.loading; b.textContent = state.loading ? 'Connecting…' : 'Connect';
+      b.disabled = state.loading; b.textContent = state.loading ? 'Signing in…' : 'Sign in';
     }
     return;
   }
@@ -394,9 +398,9 @@ function closeFocus() {
 function openSettings() {
   lastOpener = document.activeElement;
   const s = state.settings;
-  $('#s-url').value = s.url; $('#s-token').value = s.token; $('#s-auto').checked = s.auto; $('#s-error').textContent = '';
+  $('#s-url').value = s.url || DEFAULT_URL; $('#s-token').value = s.token; $('#s-auto').checked = s.auto; $('#s-error').textContent = '';
   $('#scrim').hidden = false; $('#settings').hidden = false;
-  $('#s-url').focus();
+  $('#s-auto').focus();
 }
 function closeSettings() {
   $('#settings').hidden = true;
@@ -574,7 +578,7 @@ function bind() {
   const connect = async (url, token, errEl, auto) => {
     url = url.trim(); token = token.trim();
     if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) { errEl.textContent = 'Paste the web app URL from Apps Script. It starts with https://script.google.com/macros/s/'; return false; }
-    if (!token) { errEl.textContent = 'Enter the passcode you set as DASHBOARD_TOKEN.'; return false; }
+    if (!token) { errEl.textContent = 'Enter your passcode.'; return false; }
     const settings = Object.assign({}, state.settings, { url, token }, auto == null ? {} : { auto });
     state.loading = true; state.error = null; render();
     try {
@@ -586,7 +590,7 @@ function bind() {
     finally { state.loading = false; render(); }
   };
   document.addEventListener('submit', async e => {
-    if (e.target.id === 'lock-form') { e.preventDefault(); await connect($('#l-url').value, $('#l-token').value, $('#l-error')); }
+    if (e.target.id === 'lock-form') { e.preventDefault(); await connect($('#l-url').value || DEFAULT_URL, $('#l-token').value, $('#l-error')); }
   });
   $('#settings-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -594,10 +598,11 @@ function bind() {
     if ($('#s-url').value.trim() === state.settings.url && $('#s-token').value.trim() === state.settings.token && state.data) {
       state.settings.auto = auto; store.set('settings', state.settings); schedule(); closeSettings(); toast(auto ? 'Auto-refresh is on.' : 'Auto-refresh is off.'); return;
     }
-    if (await connect($('#s-url').value, $('#s-token').value, $('#s-error'), auto)) { closeSettings(); toast('Connected to your tracker.'); }
+    if (await connect($('#s-url').value, $('#s-token').value, $('#s-error'), auto)) { closeSettings(); toast('Signed in.'); }
   });
+  $('#btn-signout').onclick = () => $('#s-signout').click();
   $('#s-signout').addEventListener('click', () => {
-    state.settings = { url: '', token: '', auto: true }; store.del('settings'); state.data = null; state.error = null; state.lastSync = null;
+    state.settings = { url: DEFAULT_URL, token: '', auto: true }; store.del('settings'); state.data = null; state.error = null; state.lastSync = null;
     clearInterval(timer); closeSettings(); closeFocus(); $('#main').innerHTML = ''; render();
   });
 
