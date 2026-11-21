@@ -450,7 +450,7 @@ function mountPlayer() {
   if (!slot || !a || a.status !== 'ready' || slot.querySelector('audio')) return;
   const el = document.createElement('audio');
   el.controls = true; el.preload = 'auto'; el.dataset.id = id; el.src = a.url;
-  el.onerror = () => { state.audio[id] = { status: 'error', msg: "This browser can't play this recording's format." }; state.playing = null; renderFocus(); };
+  el.onerror = () => { state.audio[id] = { status: 'error', msg: "This browser can't play this format. Open it in Drive on a computer." }; state.playing = null; renderFocus(); };
   slot.replaceChildren(el);
   el.play().catch(() => {}); // iPhone may need a tap on the player's own play button
 }
@@ -585,7 +585,8 @@ async function toggleRecording(name) {
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch { toast('Microphone access was blocked. Allow it in the browser address bar and try again.', { err: true }); return; }
-  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported?.(t)) || '';
+  const mime = // AAC in MP4 first: it plays everywhere, including iPhone and Google Drive's previewer.
+  ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported?.(t)) || '';
   const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
   const chunks = [];
   recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
