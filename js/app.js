@@ -25,7 +25,10 @@ const state = {
   lastSync: null,
   error: null,
   view: store.get('view', 'board'),
-  filters: Object.assign({ q: '', category: '', priority: [], today: false, completed: false, sort: 'priority' }, store.get('filters', {}), { q: '' }),
+  // Default sort is "recent": the project worked on most recently comes first.
+  // sortV bumps once so browsers that saved the old default ('priority') switch over.
+  filters: Object.assign({ q: '', category: '', priority: [], today: false, completed: false, sort: 'recent' },
+    store.get('sortV') === 2 ? store.get('filters', {}) : Object.assign(store.get('filters', {}), { sort: 'recent' }), { q: '' }),
   settings: Object.assign({ url: DEFAULT_URL, token: '', auto: true }, store.get('settings', {})),
   focus: null,
   group: null,       // overview → group drill-down (hash #g=active)
@@ -79,7 +82,9 @@ function derive() {
   const { date: today } = nowRiyadh();
   const d = state.data || { projects: [], log: [], voiceNotes: {} };
   const byProject = {};
-  for (const e of d.log || []) (byProject[e.project] ||= []).push(e);
+  // Log rows arrive in sheet order (appended at the bottom), so a higher index = logged later.
+  const lastSeq = {};
+  (d.log || []).forEach((e, i) => { (byProject[e.project] ||= []).push(e); lastSeq[e.project] = i; });
   const weekStart = addDays(today, -6);
   return d.projects.map(p => {
     const st = statusOf(p.status);
@@ -91,6 +96,8 @@ function derive() {
     const dueIn = p.due ? diffDays(p.due, today) : null;
     return Object.assign({}, p, {
       st, daily, goal, minsToday, week, weekGoal: goal * 7, entries, dueIn,
+      lastWorked: entries[0]?.date || '',
+      lastSeq: lastSeq[p.name] ?? -1,
       overdue: dueIn != null && dueIn < 0 && st.key !== 'done',
       start: daily ? slotStart(p.slot) : null,
       ring: !daily ? null : minsToday >= goal ? 'green' : minsToday > 0 ? 'amber' : 'red',
@@ -116,6 +123,9 @@ function sortList(list, by = state.filters.sort) {
   const pr = p => PRIORITY_RANK[p.priority] ?? 3;
   const due = p => p.dueIn ?? 1e6;
   const slot = p => p.start ?? 1e6;
+  // recent: latest logged session first (date, then log order); never-logged projects keep sheet row order.
+  const recent = (a, b) => b.lastWorked.localeCompare(a.lastWorked) || b.lastSeq - a.lastSeq || (a.row ?? 0) - (b.row ?? 0);
+  if (by === 'recent') return list.slice().sort((a, b) => recent(a, b) || a.name.localeCompare(b.name));
   const keys = { priority: [pr, due, slot], due: [due, pr, slot], slot: [slot, pr, due] }[by] || [pr];
   return list.slice().sort((a, b) => {
     for (const k of keys) { const d = k(a) - k(b); if (d) return d; }
@@ -227,7 +237,7 @@ function viewBoard(list) {
         : `<div class="empty"><h2>Nothing here</h2><p>${state.filters.q || state.filters.category || state.filters.priority.length || state.filters.today ? 'No projects in this group match your filters.' : 'No projects are in this group right now.'}</p></div>`}`;
   }
   return `<div class="overview">${GROUPS.map(g => {
-    const items = sortList(all.filter(g.match), 'priority');
+    const items = sortList(all.filter(g.match), state.filters.sort);
     const daily = g.key === 'active' ? items : [];
     const goal = daily.reduce((s, p) => s + p.goal, 0), got = daily.reduce((s, p) => s + Math.min(p.minsToday, p.goal), 0);
     const doneToday = daily.filter(p => p.minsToday >= p.goal).length;
@@ -646,7 +656,7 @@ function toggleTheme() {
 }
 
 // ---------- events ----------
-function saveFilters() { store.set('filters', Object.assign({}, state.filters, { q: '' })); render(); }
+function saveFilters() { store.set('filters', Object.assign({}, state.filters, { q: '' })); store.set('sortV', 2); render(); }
 
 function bind() {
   document.addEventListener('click', e => {
