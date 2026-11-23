@@ -421,6 +421,43 @@ main { padding: 24px 32px 64px; outline: 0; }
 .skel { background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; border-radius: var(--radius); border: 1px solid var(--border); height: 180px; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
+/* Today's 5 */
+.today5 { margin-bottom: 24px; }
+.t5-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.t5-head h2 { font-size: 18px; }
+.picks { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.pick {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; min-width: 0;
+  transition: border-color var(--fast) var(--ease);
+}
+.pick:hover { border-color: var(--border-strong); }
+.pick.done { border-color: color-mix(in srgb, var(--green) 40%, var(--border)); }
+.pick-head { display: flex; gap: 10px; align-items: flex-start; }
+.pick-head .grow { min-width: 0; flex: 1; }
+.pick-head h3 { font-size: 14px; line-height: 1.35; }
+.pick-n { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; background: var(--grey-bg); color: var(--text-2); }
+.pick.done .pick-n { background: var(--green-bg); color: var(--green); }
+.pick-n svg { width: 14px; height: 14px; }
+.pick-days { font-size: 12px; color: var(--text-3); }
+.pick-days.warn { color: var(--amber); } .pick-days.alert { color: var(--red); }
+.pick-next { margin: 0; font-size: 13px; color: var(--text); flex: 1; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.pick-next.none { color: var(--text-3); font-style: italic; }
+.pick-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.log-btn { height: 32px; padding: 0 12px; font-size: 12.5px; }
+.log-btn svg { width: 14px; height: 14px; }
+.btn.rec { background: var(--red); border-color: var(--red); color: #fff; }
+.vl-sheet { gap: 3px; }
+.voice-sheet { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.log-item .m { display: inline-flex; gap: 10px; align-items: baseline; }
+
+/* Not seen recently */
+.card.neglect-warn { border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); }
+.card.neglect-alert { border-color: color-mix(in srgb, var(--red) 35%, var(--border)); }
+.gt-count.amber { color: var(--amber); }
+.gt-list .nf { flex: none; font-size: 11px; }
+.gt-list .nd { margin-left: auto; flex: none; color: var(--text-3); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1100px) {
   .overview { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -429,6 +466,7 @@ main { padding: 24px 32px 64px; outline: 0; }
   .col { scroll-snap-align: start; }
   .stats { grid-template-columns: repeat(3, auto); gap: 24px 32px; }
   .goal-progress { grid-column: 1 / -1; justify-self: stretch; max-width: none; }
+  .picks { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
   .topbar { padding: 14px 16px 0; position: static; }
@@ -464,6 +502,12 @@ main { padding: 24px 32px 64px; outline: 0; }
   .log-item { grid-template-columns: 1fr auto; } .log-item time { grid-column: 1 / -1; }
   .icon-btn, .mic { width: 40px; height: 40px; }
   .focus-hero { flex-direction: column; align-items: flex-start; }
+  .picks { grid-template-columns: 1fr; gap: 8px; }
+  .pick { padding: 12px; gap: 6px; display: grid; grid-template-columns: 1fr auto; align-items: center; }
+  .pick-head, .pick-days, .pick-next { grid-column: 1; }
+  .pick-next { -webkit-line-clamp: 2; font-size: 12.5px; }
+  .pick-foot { grid-column: 2; grid-row: 1 / span 3; flex-direction: column; align-items: flex-end; gap: 8px; }
+  .log-btn { height: 40px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

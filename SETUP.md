@@ -45,9 +45,22 @@ The URL and passcode are saved only in that browser. Repeat this step on each de
 
 ## What the dashboard can change
 
-- **Status (column E only)**: from Focus mode (click any card) or by dragging a card between Board columns. "Mark completed and archive" sets it to `Completed`. Each change shows an Undo button.
+- **Status (the Current Status column only)**: from Focus mode (click any card) or the ⋯ menu on a card. "Mark completed and archive" sets it to `Completed`. Each change shows an Undo button.
 - **Voice notes**: the mic button records in the browser (up to 5 minutes) and saves the audio to **My Drive → Al-Marfat → Project Voice Notes → <Project Name>**. The newest note is linked on the card; all of them are listed in Focus mode.
-- It never writes any other column, and never touches the formula columns H, I and M or the Daily Voice Log.
+- It never writes any other column, never touches formula columns, and never writes the Daily Voice Log.
+
+## Sheet columns the dashboard reads
+
+The script finds columns by their **header text** (row 2 on Active Projects, row 1 on Daily Voice Log), so columns can be added or reordered. Headers it looks for:
+
+| Header contains | Used for |
+| --- | --- |
+| `Priority Score` | Today's 5 fallback ranking |
+| `Days Since Logged` | Days-since label, ⚠ at 7–13 days, 🚨 at 14+ |
+| `Today's Pick` | Today's 5: rows marked `✅ Today` |
+| `Voice Log Link` (both tabs) | 🎙 play buttons on cards and log rows (a URL, a `HYPERLINK()` formula or a linked cell) |
+
+Until a column exists, the dashboard works it out itself: days since logged from the last 30 days of the log (older shows as 30+), and Today's 5 as the top 5 active projects by priority (High 3, Medium 2, Low 1, times 5) plus days since logged.
 
 The script uses Google's standard Drive permission, which Google words as access to your Drive. It runs only under your own account and only creates and lists files in the `Al-Marfat/Project Voice Notes` folder.
 
@@ -62,6 +75,7 @@ If `Code.gs` changes, paste the new version, then **Deploy → Manage deployment
 | "That passcode doesn't match" | Check `DASHBOARD_TOKEN` in Script properties, with no extra spaces. |
 | "DASHBOARD_TOKEN is not set" | Step 2 wasn't saved. |
 | "Couldn't reach the Apps Script" | Make sure you copied the `/exec` URL and that access is **Anyone**. |
+| No Today's 5 marks or 🎙 buttons from the sheet | Paste the latest `Code.gs` and deploy a new version (see above). |
 | Minutes show 0 for today | The sheet's or script's time zone isn't Riyadh (step 2). |
 | Mic doesn't start | Allow microphone access in the browser's address bar. |
 

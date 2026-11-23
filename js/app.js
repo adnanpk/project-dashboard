@@ -11,6 +11,11 @@ const STATUSES = [
   { key: 'done', value: 'Completed', label: 'Completed', color: 'grey' },
 ];
 const PRIORITY_RANK = { High: 0, Medium: 1, Low: 2 };
+const PRIORITY_WEIGHT = { High: 3, Medium: 2, Low: 1 };
+const PICKS = 5;           // "Today's 5"
+const NEGLECT_WARN = 7;    // ⚠ at 7–13 days since last logged
+const NEGLECT_ALERT = 14;  // 🚨 at 14+ days
+const SORTS = ['recent', 'neglected', 'priority', 'due'];
 
 // ---------- storage (never trusted to exist) ----------
 const store = {
@@ -25,7 +30,10 @@ const state = {
   lastSync: null,
   error: null,
   view: store.get('view', 'board'),
-  filters: Object.assign({ q: '', category: '', priority: [], today: false, completed: false, sort: 'priority' }, store.get('filters', {}), { q: '' }),
+  // Default sort is "recent": the project worked on most recently comes first.
+  // sortV bumps once so browsers that saved the old default ('priority') switch over.
+  filters: Object.assign({ q: '', category: '', priority: [], today: false, completed: false, sort: 'recent' },
+    store.get('sortV') === 2 ? store.get('filters', {}) : Object.assign(store.get('filters', {}), { sort: 'recent' }), { q: '' }),
   settings: Object.assign({ url: DEFAULT_URL, token: '', auto: true }, store.get('settings', {})),
   focus: null,
   group: null,       // overview → group drill-down (hash #g=active)
@@ -34,6 +42,7 @@ const state = {
   rec: null,
   saving: new Set(),
 };
+if (!SORTS.includes(state.filters.sort)) state.filters.sort = 'recent'; // e.g. the retired "Time slot" sort
 const mock = window.__PD_MOCK__ || null; // local testing only; never shipped with data
 
 // ---------- utilities ----------
@@ -53,19 +62,6 @@ const diffDays = (a, b) => Math.round((toUTC(a) - toUTC(b)) / 864e5);
 const fmtDate = (d, opts) => new Date(toUTC(d)).toLocaleDateString('en-GB', Object.assign({ timeZone: 'UTC' }, opts));
 const safeFolder = name => String(name).replace(/[\\/:*?"<>|]/g, '-').trim();
 
-function slotStart(slot) {
-  const m = String(slot || '').match(/(\d{1,2}):(\d{2})\s*[–—-]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-  if (!m) return null;
-  let h = Number(m[1]); const ap = (m[5] || '').toUpperCase();
-  if (ap === 'PM' && h < 12) h += 12;
-  if (ap === 'AM' && h === 12) h = 0;
-  return h * 60 + Number(m[2]);
-}
-const fmtClock = mins => `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
-function slotLabel(slot) {
-  const s = slotStart(slot);
-  return s == null ? '' : `${fmtClock(s)}–${fmtClock(s + 30)}`;
-}
 function statusOf(raw) {
   const s = String(raw || '').toLowerCase();
   if (s.startsWith('complete') || s === 'archived') return STATUSES[3];
@@ -79,9 +75,11 @@ function derive() {
   const { date: today } = nowRiyadh();
   const d = state.data || { projects: [], log: [], voiceNotes: {} };
   const byProject = {};
-  for (const e of d.log || []) (byProject[e.project] ||= []).push(e);
+  // Log rows arrive in sheet order (appended at the bottom), so a higher index = logged later.
+  const lastSeq = {};
+  (d.log || []).forEach((e, i) => { (byProject[e.project] ||= []).push(e); lastSeq[e.project] = i; });
   const weekStart = addDays(today, -6);
-  return d.projects.map(p => {
+  const list = d.projects.map(p => {
     const st = statusOf(p.status);
     const entries = (byProject[p.name] || []).slice().sort((a, b) => b.date.localeCompare(a.date));
     const daily = st.key === 'active';
@@ -89,15 +87,40 @@ function derive() {
     const minsToday = entries.filter(e => e.date === today).reduce((s, e) => s + e.minutes, 0);
     const week = entries.filter(e => e.date >= weekStart).reduce((s, e) => s + e.minutes, 0);
     const dueIn = p.due ? diffDays(p.due, today) : null;
+    const lastWorked = entries[0]?.date || '';
+    // Days since last logged: the sheet's "Days Since Logged" column when present, else from the
+    // 30-day log the backend sends (null = nothing logged in that window, i.e. 30+ days).
+    const sheetDays = p.daysSince != null && p.daysSince !== '' && !isNaN(Number(p.daysSince)) ? Number(p.daysSince) : null;
+    const daysSince = sheetDays != null ? sheetDays : lastWorked ? diffDays(today, lastWorked) : null;
+    const daysKnown = daysSince != null;
+    const daysForScore = daysKnown ? daysSince : 30;
+    const neglect = st.key !== 'active' ? null : daysForScore >= NEGLECT_ALERT ? 'alert' : daysForScore >= NEGLECT_WARN ? 'warn' : null;
+    // Priority score: the sheet's formula when present; otherwise priority weight plus neglect.
+    const sheetScore = p.priorityScore != null && p.priorityScore !== '' && !isNaN(Number(p.priorityScore)) ? Number(p.priorityScore) : null;
+    const score = sheetScore != null ? sheetScore : (PRIORITY_WEIGHT[p.priority] || 1) * 5 + Math.min(daysForScore, 30);
     return Object.assign({}, p, {
       st, daily, goal, minsToday, week, weekGoal: goal * 7, entries, dueIn,
-      overdue: dueIn != null && dueIn < 0 && st.key !== 'done',
-      start: daily ? slotStart(p.slot) : null,
+      lastWorked,
+      lastSeq: lastSeq[p.name] ?? -1,
+      daysSince, daysKnown, daysForScore, neglect, score,
+      sheetPick: /✅|^\s*(today|yes)\b/i.test(String(p.todayPick || '')),
+      pastDue: dueIn != null && dueIn < 0 && st.key !== 'done',
       ring: !daily ? null : minsToday >= goal ? 'green' : minsToday > 0 ? 'amber' : 'red',
       voice: (d.voiceNotes || {})[safeFolder(p.name)] || [],
+      voiceLink: p.voiceLink || '',
     });
   });
+  // Today's 5: the sheet's "Today's Pick" column when it marks any project; else top 5 active by score.
+  const fromSheet = list.some(p => p.sheetPick);
+  const picks = fromSheet
+    ? list.filter(p => p.sheetPick && p.st.key !== 'done')
+    : list.filter(p => p.st.key === 'active').sort((a, b) => b.score - a.score || b.daysForScore - a.daysForScore || (PRIORITY_RANK[a.priority] ?? 3) - (PRIORITY_RANK[b.priority] ?? 3) || a.name.localeCompare(b.name)).slice(0, PICKS);
+  const rank = new Map(picks.map((p, i) => [p.name, i]));
+  list.forEach(p => { p.pick = rank.has(p.name); p.pickRank = rank.get(p.name) ?? 99; });
+  list.picksFromSheet = fromSheet;
+  return list;
 }
+function picksOf(list) { return list.filter(p => p.pick).sort((a, b) => a.pickRank - b.pickRank); }
 
 function applyFilters(list, { ignoreCompleted = false } = {}) {
   const f = state.filters;
@@ -106,7 +129,7 @@ function applyFilters(list, { ignoreCompleted = false } = {}) {
     if (q && !p.name.toLowerCase().includes(q)) return false;
     if (f.category && p.category !== f.category) return false;
     if (f.priority.length && !f.priority.includes(p.priority)) return false;
-    if (f.today && !(p.daily && p.start != null)) return false;
+    if (f.today && !p.pick) return false;
     if (!ignoreCompleted && !f.completed && p.st.key === 'done') return false;
     return true;
   });
@@ -115,8 +138,13 @@ function applyFilters(list, { ignoreCompleted = false } = {}) {
 function sortList(list, by = state.filters.sort) {
   const pr = p => PRIORITY_RANK[p.priority] ?? 3;
   const due = p => p.dueIn ?? 1e6;
-  const slot = p => p.start ?? 1e6;
-  const keys = { priority: [pr, due, slot], due: [due, pr, slot], slot: [slot, pr, due] }[by] || [pr];
+  const neglected = p => -p.daysForScore;
+  // recent: latest logged session first (date, then log order); never-logged projects keep sheet row order.
+  const recent = (a, b) => b.lastWorked.localeCompare(a.lastWorked) || b.lastSeq - a.lastSeq || (a.row ?? 0) - (b.row ?? 0);
+  if (by === 'recent') return list.slice().sort((a, b) => recent(a, b) || a.name.localeCompare(b.name));
+  // neglected: active projects with the most days since last logged first (30+ days at the top), then priority.
+  const paused = p => (p.st.key === 'active' ? 0 : 1); // active rotation first; paused projects aren't "neglected"
+  const keys = { neglected: [paused, neglected, pr, due], priority: [pr, due], due: [due, pr] }[by] || [pr];
   return list.slice().sort((a, b) => {
     for (const k of keys) { const d = k(a) - k(b); if (d) return d; }
     return a.name.localeCompare(b.name);
@@ -153,14 +181,23 @@ function statusChip(p) {
 function dueChip(p) {
   if (p.dueIn == null || p.st.key === 'done') return '';
   const n = p.dueIn;
-  if (n < 0) return `<span class="chip red">${icons.flag}${-n}d overdue</span>`;
+  if (n < 0) return `<span class="chip outline">${icons.cal}Was due ${fmtDate(p.due, { day: 'numeric', month: 'short' })}</span>`;
   if (n === 0) return `<span class="chip amber">${icons.cal}Due today</span>`;
   if (n === 1) return `<span class="chip amber">${icons.cal}Due tomorrow</span>`;
   return `<span class="chip ${n <= 3 ? 'amber' : 'outline'}">${icons.cal}Due in ${n}d</span>`;
 }
-function slotChip(p) {
-  const l = slotLabel(p.slot);
-  return l ? `<span class="chip outline tnum">${icons.clock}${l}</span>` : '';
+function daysText(p) {
+  if (!p.daysKnown) return 'Not logged in 30+ days';
+  const n = p.daysSince;
+  return n <= 0 ? 'Logged today' : n === 1 ? 'Logged yesterday' : `Logged ${n} days ago`;
+}
+// Days since last logged, flagged ⚠ at 7–13 days and 🚨 at 14+ for active projects.
+function daysChip(p, { always = false } = {}) {
+  if (p.st.key === 'done') return '';
+  if (p.neglect === 'alert') return `<span class="chip red" title="${attr(daysText(p))}">🚨 ${p.daysKnown ? `${p.daysSince}d` : '30d+'} not seen</span>`;
+  if (p.neglect === 'warn') return `<span class="chip amber" title="${attr(daysText(p))}">⚠ ${p.daysSince}d not seen</span>`;
+  if (!always && p.st.key !== 'active') return '';
+  return `<span class="chip outline">${icons.clock}${esc(daysText(p))}</span>`;
 }
 function micButton(p, big = false) {
   const rec = state.rec && state.rec.project === p.name;
@@ -172,8 +209,14 @@ function micButton(p, big = false) {
 }
 function latestVoice(p) {
   const v = p.voice[0];
-  if (!v) return '';
-  return `<button class="voice-link" data-play-latest="${attr(p.name)}" title="Play the latest voice note">${icons.play}Note${p.voice.length > 1 ? ` · ${p.voice.length}` : ''}</button>`;
+  // Sheet "Voice Log Link" column: open that recording in Drive (skipped when it's the note already playable here).
+  const sheet = p.voiceLink && !(v?.id && p.voiceLink.includes(v.id)) ? voiceLinkBtn(p.voiceLink, `Play the voice log for ${p.name} in Google Drive`) : '';
+  const inApp = v ? `<button class="voice-link" data-play-latest="${attr(p.name)}" title="Play the latest voice note">${icons.play}Note${p.voice.length > 1 ? ` · ${p.voice.length}` : ''}</button>` : '';
+  return sheet + inApp;
+}
+function voiceLinkBtn(url, label) {
+  if (!/^https:\/\//i.test(url)) return '';
+  return `<a class="voice-link vl-sheet" href="${attr(url)}" target="_blank" rel="noopener" data-stop aria-label="${attr(label)}" title="${attr(label)}">🎙<span>Play</span></a>`;
 }
 
 function menuButton(p) {
@@ -182,7 +225,7 @@ function menuButton(p) {
 function card(p, { draggable = false, compact = false } = {}) {
   const weekPct = p.weekGoal ? Math.min(100, (p.week / p.weekGoal) * 100) : 0;
   const nextEmpty = !p.nextAction || p.nextAction === '—';
-  return `<article class="card ${p.overdue ? 'overdue' : ''}" data-open="${attr(p.name)}" tabindex="0" ${draggable ? 'draggable="true"' : ''} aria-label="${attr(p.name)}">
+  return `<article class="card ${p.neglect ? 'neglect-' + p.neglect : ''}" data-open="${attr(p.name)}" tabindex="0" ${draggable ? 'draggable="true"' : ''} aria-label="${attr(p.name)}">
     <div class="card-head">
       <div class="card-title">
         <h3>${esc(p.name)}</h3>
@@ -191,7 +234,7 @@ function card(p, { draggable = false, compact = false } = {}) {
       ${ring(p)}
       ${menuButton(p)}
     </div>
-    <div class="chips">${statusChip(p)}${slotChip(p)}${dueChip(p)}</div>
+    <div class="chips">${p.pick ? `<span class="chip green">Today's 5</span>` : ''}${statusChip(p)}${daysChip(p)}${dueChip(p)}</div>
     <div class="actions-block">
       <div><div class="act-label">Next</div><div class="act-text next ${nextEmpty ? 'empty' : ''}">${nextEmpty ? 'No next action set' : esc(p.nextAction)}</div></div>
       ${p.lastAction && !compact ? `<div><div class="act-label">Last done</div><div class="act-text">${esc(p.lastAction)}</div></div>` : ''}
@@ -205,10 +248,37 @@ function card(p, { draggable = false, compact = false } = {}) {
   </article>`;
 }
 
+function logButton(p) {
+  const rec = state.rec && state.rec.project === p.name;
+  const busy = state.saving.has('voice:' + p.name);
+  return `<button class="btn ${rec ? 'rec' : 'primary'} log-btn" data-mic="${attr(p.name)}" ${busy ? 'disabled' : ''}
+    title="${rec ? 'Stop and save the voice note to Drive' : 'Record a voice note about this session'}">${rec ? icons.stop : icons.mic}${busy ? 'Saving…' : rec ? `Stop · <span data-rec-time>${recElapsed()}</span>` : 'Log session'}</button>`;
+}
+function pickCard(p, i) {
+  const nextEmpty = !p.nextAction || p.nextAction === '—';
+  const done = p.daily && p.minsToday >= p.goal;
+  return `<article class="pick ${done ? 'done' : ''}" data-open="${attr(p.name)}" tabindex="0" aria-label="${attr(`${i + 1}. ${p.name}`)}">
+    <div class="pick-head"><span class="pick-n tnum">${done ? icons.check : i + 1}</span>
+      <div class="grow"><h3>${esc(p.name)}</h3><div class="card-meta"><span>${esc(p.category || 'Uncategorised')}</span><span class="dot">${esc(p.priority || '—')}</span></div></div></div>
+    <div class="pick-days ${p.neglect || ''}">${p.neglect === 'alert' ? '🚨 ' : p.neglect === 'warn' ? '⚠ ' : ''}${esc(daysText(p))}</div>
+    <p class="pick-next ${nextEmpty ? 'none' : ''}">${nextEmpty ? 'No next action set' : esc(p.nextAction)}</p>
+    <div class="pick-foot">${logButton(p)}${latestVoice(p)}${p.daily && p.minsToday ? `<span class="tile-mins ${p.ring}" style="display:inline">${p.minsToday}/${p.goal}m</span>` : ''}</div>
+  </article>`;
+}
+function todaySection(list) {
+  const picks = applyFilters(picksOf(list), { ignoreCompleted: true });
+  const done = picks.filter(p => p.daily && p.minsToday >= p.goal).length;
+  const src = list.picksFromSheet ? "From the sheet's Today's Pick column" : 'Highest priority score: priority plus days since last logged';
+  return `<section class="today5" aria-labelledby="t5-title">
+    <div class="t5-head"><h2 id="t5-title">Today's ${picks.length === PICKS ? '5' : picks.length}</h2><span class="hint">${done} of ${picks.length} done · ${src}</span></div>
+    ${picks.length ? `<div class="picks">${picks.map(pickCard).join('')}</div>` : `<div class="muted-box">No active projects ${state.filters.q || state.filters.category || state.filters.priority.length ? 'match your filters' : 'to pick today'}.</div>`}
+  </section>`;
+}
+
 // ---------- views ----------
 const GROUPS = [
   { key: 'active', label: 'Active daily', color: 'green', match: p => p.st.key === 'active' },
-  { key: 'overdue', label: 'Overdue', color: 'red', match: p => p.overdue },
+  { key: 'neglect', label: 'Not seen recently', color: 'amber', match: p => !!p.neglect, sort: 'neglected' },
   { key: 'waiting', label: 'Waiting', color: 'blue', match: p => p.st.key === 'waiting' },
   { key: 'hold', label: 'On hold', color: 'amber', match: p => p.st.key === 'hold' },
   { key: 'done', label: 'Completed', color: 'grey', match: p => p.st.key === 'done' },
@@ -218,7 +288,7 @@ function viewBoard(list) {
   const all = applyFilters(list, { ignoreCompleted: true });
   const g = GROUPS.find(x => x.key === state.group);
   if (g) {
-    const items = sortList(all.filter(g.match), state.filters.sort);
+    const items = sortList(all.filter(g.match), g.sort || state.filters.sort);
     return `<div class="group-head">
         <button class="btn ghost back" data-group="">${icons.back}Overview</button>
         <h2><i class="status-dot ${g.color}"></i>${g.label}<span class="count tnum">${items.length}</span></h2>
@@ -226,20 +296,22 @@ function viewBoard(list) {
       ${items.length ? `<div class="tiles">${items.map(p => card(p, { compact: true })).join('')}</div>`
         : `<div class="empty"><h2>Nothing here</h2><p>${state.filters.q || state.filters.category || state.filters.priority.length || state.filters.today ? 'No projects in this group match your filters.' : 'No projects are in this group right now.'}</p></div>`}`;
   }
-  return `<div class="overview">${GROUPS.map(g => {
-    const items = sortList(all.filter(g.match), 'priority');
+  return `${todaySection(list)}<div class="overview">${GROUPS.map(g => {
+    const items = sortList(all.filter(g.match), g.sort || state.filters.sort);
     const daily = g.key === 'active' ? items : [];
     const goal = daily.reduce((s, p) => s + p.goal, 0), got = daily.reduce((s, p) => s + Math.min(p.minsToday, p.goal), 0);
     const doneToday = daily.filter(p => p.minsToday >= p.goal).length;
     const sub = g.key === 'active' ? `${doneToday} of ${items.length} done today`
-      : g.key === 'overdue' ? (items.length ? 'Past their due date' : 'Nothing overdue')
+      : g.key === 'neglect' ? (items.length ? `Active, not logged in ${NEGLECT_WARN}+ days` : `Everything logged in the last ${NEGLECT_WARN} days`)
       : g.key === 'done' ? 'Archived' : g.key === 'waiting' ? 'Blocked on someone else' : 'Paused';
     return `<button class="group-tile g-${g.key}" data-group="${g.key}" aria-label="${attr(`${g.label}, ${items.length} projects`)}">
       <div class="gt-top"><span class="gt-label"><i class="status-dot ${g.color}"></i>${g.label}</span>${icons.chev}</div>
-      <div class="gt-count tnum ${g.key === 'overdue' && items.length ? 'red' : ''}">${items.length}</div>
+      <div class="gt-count tnum ${g.key === 'neglect' && items.some(p => p.neglect === 'alert') ? 'red' : g.key === 'neglect' && items.length ? 'amber' : ''}">${items.length}</div>
       <div class="gt-sub">${sub}</div>
       ${g.key === 'active' && goal ? `<div class="bar ${got >= goal ? 'green' : ''}"><i style="width:${(got / goal) * 100}%"></i></div>` : ''}
-      <ul class="gt-list">${items.slice(0, 4).map(p => `<li>${p.ring ? `<i class="mini-dot ${p.ring}"></i>` : ''}<span>${esc(p.name)}</span></li>`).join('')}${items.length > 4 ? `<li class="more">+${items.length - 4} more</li>` : ''}</ul>
+      <ul class="gt-list">${items.slice(0, 4).map(p => g.key === 'neglect'
+        ? `<li><span class="nf">${p.neglect === 'alert' ? '🚨' : '⚠'}</span><span>${esc(p.name)}</span><span class="nd tnum">${p.daysKnown ? p.daysSince + 'd' : '30d+'}</span></li>`
+        : `<li>${p.ring ? `<i class="mini-dot ${p.ring}"></i>` : ''}<span>${esc(p.name)}</span></li>`).join('')}${items.length > 4 ? `<li class="more">+${items.length - 4} more</li>` : ''}</ul>
     </button>`;
   }).join('')}</div>`;
 }
@@ -258,29 +330,12 @@ function viewGrid(list) {
   return items.length ? `<div class="grid">${items.map(p => card(p)).join('')}</div>` : emptyFiltered();
 }
 
+// "Today" tab: today's 5, then the rest of the active rotation in the order they'll come up.
 function viewSchedule(list) {
-  const { mins } = nowRiyadh();
-  const items = applyFilters(list).filter(p => p.daily);
-  const slotted = items.filter(p => p.start != null);
-  const rows = [];
-  for (let h = 6; h < 16; h++) {
-    const start = h * 60, end = start + 60;
-    const here = slotted.filter(p => p.start >= start && p.start < end);
-    const isNow = mins >= start && mins < end;
-    const nowLine = isNow ? `<div class="now-line" style="top:${((mins - start) / 60) * 100}%"></div>` : '';
-    rows.push(`<div class="slot ${isNow ? 'now' : ''} ${mins >= end ? 'past' : ''}">
-      <div class="slot-time">${fmtClock(start)}</div>
-      <div class="slot-body">${here.length ? here.map(p => `<div class="slot-item" data-open="${attr(p.name)}" tabindex="0">
-        ${ring(p)}<div class="grow"><h3>${esc(p.name)}</h3><p>${esc(p.nextAction && p.nextAction !== '—' ? p.nextAction : 'No next action set')}</p></div>
-        <span class="chip outline tnum">${slotLabel(p.slot)}</span>${micButton(p)}</div>`).join('') : '<span class="slot-free">Free</span>'}</div>
-      ${nowLine}</div>`);
-  }
-  const unslotted = sortList(items.filter(p => p.start == null), 'priority');
-  const other = slotted.filter(p => p.start < 360 || p.start >= 960);
-  const rest = unslotted.concat(other);
-  return `<div class="schedule">${rows.join('')}</div>
-    ${rest.length ? `<h3 class="section-title">Daily projects without a slot in 06:00–16:00 · ${rest.length}</h3>
-    <div class="unslotted">${rest.map(p => `<div class="mini" data-open="${attr(p.name)}" tabindex="0">${ring(p)}<div class="grow"><b>${esc(p.name)}</b><small>${esc(p.priority)} · ${p.minsToday}/${p.goal} min</small></div></div>`).join('')}</div>` : ''}`;
+  const rest = applyFilters(list).filter(p => p.st.key === 'active' && !p.pick).sort((a, b) => b.score - a.score || b.daysForScore - a.daysForScore || a.name.localeCompare(b.name));
+  return `${todaySection(list)}
+    ${rest.length ? `<h3 class="section-title">Next up in the rotation · ${rest.length}</h3>
+    <div class="unslotted">${rest.map(p => `<div class="mini" data-open="${attr(p.name)}" tabindex="0">${ring(p)}<div class="grow"><b>${esc(p.name)}</b><small>${esc(p.priority)} · ${p.neglect === 'alert' ? '🚨 ' : p.neglect === 'warn' ? '⚠ ' : ''}${esc(daysText(p))}</small></div>${latestVoice(p)}</div>`).join('')}</div>` : ''}`;
 }
 
 function viewTimeline(list) {
@@ -290,9 +345,9 @@ function viewTimeline(list) {
   const days = Array.from({ length: 21 }, (_, i) => addDays(today, i));
   const later = items.filter(p => p.dueIn >= 21);
   const noDue = applyFilters(list).filter(p => !p.due && p.st.key !== 'done').length;
-  const pill = p => `<button class="tl-pill p-${attr(p.priority)} ${p.overdue ? 'overdue' : ''}" data-open="${attr(p.name)}">${esc(p.name)}<small>${p.overdue ? `${-p.dueIn}d overdue · ` : ''}${esc(p.priority)}</small></button>`;
+  const pill = p => `<button class="tl-pill p-${attr(p.priority)} ${p.pastDue ? 'overdue' : ''}" data-open="${attr(p.name)}">${esc(p.name)}<small>${p.pastDue ? `was due ${fmtDate(p.due, { day: 'numeric', month: 'short' })} · ` : ''}${esc(p.priority)}</small></button>`;
   const cols = [];
-  if (overdue.length) cols.push(`<div class="tl-day overdue-col"><div class="tl-day-head">Before today<b>Overdue</b></div><div class="tl-items">${overdue.map(pill).join('')}</div></div>`);
+  if (overdue.length) cols.push(`<div class="tl-day overdue-col"><div class="tl-day-head">Before today<b>Past due</b></div><div class="tl-items">${overdue.map(pill).join('')}</div></div>`);
   for (const d of days) {
     const its = sortList(items.filter(p => p.due === d), 'priority');
     const dow = new Date(toUTC(d)).getUTCDay();
@@ -328,16 +383,18 @@ function renderHeader(list) {
   const { date } = nowRiyadh();
   $('#today').textContent = fmtDate(date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   const daily = list.filter(p => p.daily);
-  const overdue = list.filter(p => p.overdue).length;
-  const done = daily.filter(p => p.minsToday >= p.goal).length;
-  const goalSum = daily.reduce((s, p) => s + p.goal, 0);
-  const got = daily.reduce((s, p) => s + Math.min(p.minsToday, p.goal), 0);
+  const picks = picksOf(list);
+  const neglected = list.filter(p => p.neglect);
+  const alerts = neglected.filter(p => p.neglect === 'alert').length;
+  const done = picks.filter(p => p.minsToday >= (p.goal || 30)).length;
+  const goalSum = picks.reduce((s, p) => s + (p.goal || 30), 0);
+  const got = picks.reduce((s, p) => s + Math.min(p.minsToday, p.goal || 30), 0);
   const pct = goalSum ? Math.round((got / goalSum) * 100) : 0;
   $('#stats').innerHTML = state.data ? `
     <div><div class="stat-label">Active daily</div><div class="stat-value tnum">${daily.length}</div></div>
-    <div><div class="stat-label">Overdue</div><div class="stat-value tnum ${overdue ? 'red' : ''}">${overdue}</div></div>
-    <div><div class="stat-label">Done today</div><div class="stat-value tnum">${done}<small>/ ${daily.length}</small></div></div>
-    <div class="goal-progress"><div class="goal-progress-head"><span>30-min goals today</span><span class="tnum"><b>${got}</b> / ${goalSum} min · ${pct}%</span></div>
+    <div><div class="stat-label">Not seen ${NEGLECT_WARN}d+</div><div class="stat-value tnum ${alerts ? 'red' : neglected.length ? 'amber' : ''}">${neglected.length}</div></div>
+    <div><div class="stat-label">Today's 5 done</div><div class="stat-value tnum">${done}<small>/ ${picks.length}</small></div></div>
+    <div class="goal-progress"><div class="goal-progress-head"><span>Today's 5 · 30 min each</span><span class="tnum"><b>${got}</b> / ${goalSum} min · ${pct}%</span></div>
       <div class="bar ${pct >= 100 ? 'green' : pct > 0 ? '' : ''}"><i style="width:${pct}%"></i></div></div>` : '';
   const sync = $('#sync');
   sync.className = 'sync' + (state.error && state.data ? ' err' : state.lastSync ? ' live' : '');
@@ -411,7 +468,7 @@ function renderFocus(list = derive()) {
     <div class="focus-body">
       <div class="focus-hero">${ring(p, 'lg')}
         <div class="grow"><h2 id="focus-title">${esc(p.name)}</h2>
-          <div class="chips">${statusChip(p)}<span class="chip outline">${esc(p.priority || '—')}</span><span class="chip outline">${esc(p.category || '')}</span>${slotChip(p)}${dueChip(p)}</div></div></div>
+          <div class="chips">${statusChip(p)}<span class="chip outline">${esc(p.priority || '—')}</span><span class="chip outline">${esc(p.category || '')}</span>${p.pick ? `<span class="chip green">Today's 5</span>` : ''}${daysChip(p, { always: true })}${dueChip(p)}</div></div></div>
       <div class="move-row">
         <label for="move-select">Move to</label>
         <select id="move-select" data-move="${attr(p.name)}" ${saving ? 'disabled' : ''}>${STATUSES.map(s => `<option value="${attr(s.value)}" ${p.st.key === s.key ? 'selected' : ''}>${s.label}</option>`).join('')}</select>
@@ -421,10 +478,11 @@ function renderFocus(list = derive()) {
         ${p.lastAction ? `<div class="last"><div class="act-label">Last completed</div>${esc(p.lastAction)}</div>` : ''}</div>
       <section class="focus-sec" id="voice-sec"><h4>Voice notes <span>${p.voice.length || ''}</span></h4>
         ${micButton(p, true)}
+        ${p.voiceLink ? `<div class="voice-sheet">${voiceLinkBtn(p.voiceLink, 'Open the voice log linked in the sheet')}<span class="hint">Voice log linked in the sheet</span></div>` : ''}
         ${p.voice.length ? `<div class="voice-list" style="margin-top:12px">${p.voice.map(v => voiceRow(v)).join('')}</div>` : ''}</section>
       ${p.daily ? `<section class="focus-sec"><h4>Last 7 days <span class="tnum">${p.week} / ${p.weekGoal} min</span></h4><div class="week-chart">${chart}</div></section>` : ''}
       <section class="focus-sec"><h4>Recent log <span>${p.entries.length ? 'last 30 days' : ''}</span></h4>
-        ${p.entries.length ? `<div class="log-list">${p.entries.slice(0, 10).map(e => `<div class="log-item"><time>${fmtDate(e.date, { day: 'numeric', month: 'short' })}</time><div><p>${esc(e.work || '—')}</p>${e.next ? `<p>Next: ${esc(e.next)}</p>` : ''}</div><span class="m">${e.minutes} min</span></div>`).join('')}</div>` : '<div class="muted-box">No log entries in the last 30 days.</div>'}</section>
+        ${p.entries.length ? `<div class="log-list">${p.entries.slice(0, 10).map(e => `<div class="log-item"><time>${fmtDate(e.date, { day: 'numeric', month: 'short' })}</time><div><p>${esc(e.work || '—')}</p>${e.next ? `<p>Next: ${esc(e.next)}</p>` : ''}</div><span class="m">${e.voiceLink ? voiceLinkBtn(e.voiceLink, `Play the voice note for ${fmtDate(e.date, { day: 'numeric', month: 'short' })}`) : ''}${e.minutes} min</span></div>`).join('')}</div>` : '<div class="muted-box">No log entries in the last 30 days.</div>'}</section>
     </div>`;
   el.querySelector('.focus-body').scrollTop = scrollTop;
   const slot = liveAudio && el.querySelector(`[data-player="${liveAudio.dataset.id}"]`);
@@ -646,7 +704,7 @@ function toggleTheme() {
 }
 
 // ---------- events ----------
-function saveFilters() { store.set('filters', Object.assign({}, state.filters, { q: '' })); render(); }
+function saveFilters() { store.set('filters', Object.assign({}, state.filters, { q: '' })); store.set('sortV', 2); render(); }
 
 function bind() {
   document.addEventListener('click', e => {
