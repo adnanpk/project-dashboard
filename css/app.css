@@ -523,3 +523,55 @@ main { padding: 24px 32px 64px; outline: 0; }
 .where.full { margin-top: 0; padding-top: 0; border-top: 0; font-size: 14px; gap: 8px; }
 .where.full .where-text { -webkit-line-clamp: unset; display: block; }
 .where a { color: var(--accent, inherit); text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---------- Top tabs: Projects | Subscriptions ---------- */
+.sections { display: flex; gap: 18px; align-items: baseline; }
+.sections button { border: 0; background: none; padding: 0 0 4px; font-size: 20px; font-weight: 600; letter-spacing: -.01em; color: var(--text-3); border-bottom: 2px solid transparent; transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease); }
+.sections button:hover { color: var(--text-2); }
+.sections button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
+body[data-section="subs"] .stats { padding-bottom: 18px; }
+body[data-section="subs"] .topbar { padding-bottom: 0; }
+
+/* ---------- Subscriptions ---------- */
+.section-title.first { margin-top: 4px; }
+.sub-card { cursor: default; }
+.sub-card.sub-soon { border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); }
+.sub-card.sub-urgent, .sub-card.sub-lapsed { border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+.sub-card.sub-closed { opacity: .75; }
+.sub-amount { font-size: 15px; font-weight: 600; white-space: nowrap; }
+.sub-where { margin-top: 0; gap: 8px; }
+.sub-where .where-row { grid-template-columns: 76px 1fr; }
+.sub-remind { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.sub-remind .where-text { display: inline-flex; align-items: center; gap: 5px; }
+.sub-remind .where-text svg { width: 13px; height: 13px; }
+.sub-remind small { color: var(--text-3); }
+.muted { color: var(--text-3); }
+.cal-ok { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; font-weight: 500; color: var(--green); }
+.cal-ok svg { width: 13px; height: 13px; }
+.cal-wait { font-size: 11.5px; color: var(--amber); }
+.btn.sm { height: 30px; padding: 0 10px; font-size: 12.5px; }
+.sub-remind .btn.sm { margin-left: auto; }
+.sub-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sub-form input[type=date] { height: 36px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); min-width: 0; }
+.sub-form .hint { flex-basis: 100%; margin: 0; }
+.sub-timeline { list-style: none; margin: 0 0 8px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.sub-timeline li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); min-width: 0; }
+.sub-timeline li.soon { border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); }
+.sub-timeline time { font-weight: 600; font-size: 13px; min-width: 48px; }
+.sub-timeline .grow { flex: 1; min-width: 0; display: grid; }
+.sub-timeline b { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-timeline small { color: var(--text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-closed-list summary { cursor: pointer; list-style-position: inside; }
+.sub-next-name { font-size: 14px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-next-name b { color: var(--text); font-weight: 600; }
+@media (max-width: 720px) {
+  .sections { gap: 14px; }
+  .sections button { font-size: 18px; }
+  .topbar-row { flex-wrap: wrap; row-gap: 4px; }
+  .topbar-actions { order: -1; margin-left: auto; }
+  .brand { flex: 1 1 100%; flex-direction: column; gap: 2px; align-items: flex-start; }
+  .sub-where .where-row { grid-template-columns: 1fr; gap: 2px; }
+  .sub-remind .btn.sm { height: 40px; margin-left: 0; }
+  .sub-form .btn { height: 40px; }
+  .sub-form input[type=date] { height: 40px; flex: 1 1 100%; }
+}

@@ -47,6 +47,7 @@ The URL and passcode are saved only in that browser. Repeat this step on each de
 
 - **Status (the Current Status column only)**: from Focus mode (click any card) or the ⋯ menu on a card. "Mark completed and archive" sets it to `Completed`. Each change shows an Undo button.
 - **Voice notes**: the mic button records in the browser (up to 5 minutes) and saves the audio to **My Drive → Al-Marfat → Project Voice Notes → <Project Name>**. The newest note is linked on the card; all of them are listed in Focus mode.
+- **Subscription reminders**: "Set reminder" on a subscription card writes only that row's Reminder Date on the Subscription Dashboard tab, and the script adds the Google Calendar event.
 - It never writes any other column, never touches formula columns, and never writes the Daily Voice Log.
 
 ## Sheet columns the dashboard reads
@@ -64,6 +65,35 @@ Until a column exists, the dashboard works it out itself: days since logged from
 
 The script uses Google's standard Drive permission, which Google words as access to your Drive. It runs only under your own account and only creates and lists files in the `Al-Marfat/Project Voice Notes` folder.
 
+## Subscriptions
+
+The **Subscriptions** tab at the top of the dashboard reads the sheet's **Subscription Dashboard** tab. Set it up once:
+
+1. Paste the latest `Code.gs` into Extensions → Apps Script and save.
+2. In the function picker at the top of the editor, choose **setupSubscriptionDashboard** and click **Run**. Google asks for permission again because the script now uses **Google Calendar**: click Review permissions, pick your account, then Allow.
+3. **Deploy → Manage deployments → pencil icon → Version: New version → Deploy** (the URL stays the same).
+
+`setupSubscriptionDashboard` adds the tab if it isn't there (it never touches your other tabs), with these columns:
+
+| Column | What goes in it |
+| --- | --- |
+| Service | e.g. ChatGPT Plus |
+| Nature | Paid, Trial, Free or Complimentary (dropdown) |
+| Account / Email | the account the subscription is on |
+| Start Date, End Date | dates |
+| Amount Paid | e.g. SAR 75 |
+| Action on Expiry | Renew, Cancel, Downgrade, Upgrade, Switch to free or Decide (dropdown) |
+| Reminder Date | the day you want to be reminded |
+| Calendar Reminder | filled in by the script (✅ and the time) |
+| Action Taken | what you actually did at expiry |
+| Status | Active, Expired, Cancelled or Renewed (dropdown) |
+| Notes | anything else |
+| Calendar Event ID | hidden, used by the script so a reminder is never created twice |
+
+**Reminders:** when a row has a Reminder Date, the script creates an event at **9:00 AM Riyadh time** that day in the Google Calendar of the account that owns the sheet, with a pop-up the day before, a pop-up on the day and an email. It runs as soon as you edit a row, again every morning at 7, and from the sheet menu **Subscriptions → Sync calendar reminders now**. Changing the date moves the event; clearing it deletes the event. You can also set or change a reminder from the dashboard with **Set reminder** on any subscription card.
+
+**Flags on the dashboard:** subscriptions ending within 30 days are amber, within 7 days red, and ones past their end date with no Action Taken show 🚨. A subscription counts as done once its Status is Cancelled or Renewed, or Expired with Action Taken filled in.
+
 ## Updating the script later
 
 If `Code.gs` changes, paste the new version, then **Deploy → Manage deployments → pencil icon → Version: New version → Deploy**. The URL stays the same.
@@ -78,7 +108,10 @@ If `Code.gs` changes, paste the new version, then **Deploy → Manage deployment
 | No Today's 5 marks or 🎙 buttons from the sheet | Paste the latest `Code.gs` and deploy a new version (see above). |
 | Minutes show 0 for today | The sheet's or script's time zone isn't Riyadh (step 2). |
 | Mic doesn't start | Allow microphone access in the browser's address bar. |
+| Subscriptions says "Update the Apps Script" | Paste the latest `Code.gs` and deploy a new version. |
+| Subscriptions says "Set up the Subscription Dashboard tab" | Run `setupSubscriptionDashboard` once (see Subscriptions above). |
+| A reminder isn't in Calendar | Check the Calendar Reminder column for a message, then use Subscriptions → Sync calendar reminders now. |
 
 ## Shortcuts
 
-`/` search · `1`–`4` switch views · `R` refresh · `T` light/dark · `Esc` close
+`P` projects · `S` subscriptions · `/` search · `1`–`4` switch views · `R` refresh · `T` light/dark · `Esc` close
