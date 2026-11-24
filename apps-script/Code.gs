@@ -10,7 +10,7 @@
  *                                    Al-Marfat/Project Voice Notes/<Project Name>/
  *
  * Columns are found by their header text, so new sheet columns (Priority Score, Days Since Logged,
- * Today's Pick, Voice Log Link) are picked up automatically. Only the Current Status cell is written;
+ * Today's Pick, Voice Log Link, Claude Location, Tech Stack & Links) are picked up automatically. Only the Current Status cell is written;
  * formula columns and the Daily Voice Log are never written.
  *
  * SETUP: Project Settings (gear icon) → Script properties → add
@@ -70,6 +70,8 @@ const P_COLS = {
   alert:         [/reminder|alert/i, -1],
   todayPick:     [/today'?s pick|pick/i, -1],
   voiceLink:     [/voice/i, -1],
+  claudeLocation:[/claude location|where.*claude/i, -1],
+  techStack:     [/tech stack|stack/i, -1],
 };
 const L_COLS = {
   date:      [/^date$/i, 0],
@@ -150,6 +152,8 @@ function read_() {
         alertSheet: d(r, 'alert'),                  // formula column (read only)
         todayPick: d(r, 'todayPick'),               // formula column (read only)
         voiceLink: vCol >= 0 ? linkOf_(r[vCol], vForm[i][0], vRich[i][0]) : '',
+        claudeLocation: d(r, 'claudeLocation'),     // free text, may contain a claude.ai link
+        techStack: d(r, 'techStack'),               // free text: repo, hosting, account, domain
       });
     });
   }

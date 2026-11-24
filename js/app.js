@@ -108,6 +108,8 @@ function derive() {
       ring: !daily ? null : minsToday >= goal ? 'green' : minsToday > 0 ? 'amber' : 'red',
       voice: (d.voiceNotes || {})[safeFolder(p.name)] || [],
       voiceLink: p.voiceLink || '',
+      claudeLocation: String(p.claudeLocation || '').trim(),
+      techStack: String(p.techStack || '').trim(),
     });
   });
   // Today's 5: the sheet's "Today's Pick" column when it marks any project; else top 5 active by score.
@@ -219,6 +221,18 @@ function voiceLinkBtn(url, label) {
   return `<a class="voice-link vl-sheet" href="${attr(url)}" target="_blank" rel="noopener" data-stop aria-label="${attr(label)}" title="${attr(label)}">🎙<span>Play</span></a>`;
 }
 
+// Free text from the sheet with any https links turned into safe anchors.
+function linkify(text) {
+  return String(text || '').split(/(https:\/\/[^\s;,)]+)/g).map((part, i) =>
+    i % 2 ? `<a href="${attr(part)}" target="_blank" rel="noopener" data-stop>${esc(part.replace(/^https:\/\//, ''))}</a>` : esc(part)).join('');
+}
+// "Claude Location" and "Tech Stack & Links" columns: where the work lives.
+function whereBlock(p, { full = false } = {}) {
+  if (!p.claudeLocation && !p.techStack) return '';
+  const row = (label, v) => v ? `<div class="where-row"><span class="act-label">${label}</span><span class="where-text">${linkify(v)}</span></div>` : '';
+  return `<div class="where ${full ? 'full' : ''}">${row('Claude', p.claudeLocation)}${row('Stack', p.techStack)}</div>`;
+}
+
 function menuButton(p) {
   return `<button class="icon-btn card-menu" data-menu="${attr(p.name)}" aria-label="${attr('Actions for ' + p.name)}" aria-haspopup="menu" title="Move or other actions">${icons.dots}</button>`;
 }
@@ -239,6 +253,7 @@ function card(p, { draggable = false, compact = false } = {}) {
       <div><div class="act-label">Next</div><div class="act-text next ${nextEmpty ? 'empty' : ''}">${nextEmpty ? 'No next action set' : esc(p.nextAction)}</div></div>
       ${p.lastAction && !compact ? `<div><div class="act-label">Last done</div><div class="act-text">${esc(p.lastAction)}</div></div>` : ''}
     </div>
+    ${compact ? '' : whereBlock(p)}
     <div class="card-foot">
       ${p.daily ? `<span class="tile-mins ${p.ring}">${p.minsToday}/${p.goal}m</span>` : ''}
       ${p.daily ? `<div class="week"><div class="week-head"><span>This week</span><span class="tnum">${p.week} / ${p.weekGoal} min</span></div><div class="bar ${weekPct >= 100 ? 'green' : ''}"><i style="width:${weekPct}%"></i></div></div>` : '<div class="week"></div>'}
@@ -476,6 +491,7 @@ function renderFocus(list = derive()) {
       </div>
       <div class="focus-next"><div class="act-label">Next action</div><p class="${nextEmpty ? 'act-text empty' : ''}">${nextEmpty ? 'No next action set' : esc(p.nextAction)}</p>
         ${p.lastAction ? `<div class="last"><div class="act-label">Last completed</div>${esc(p.lastAction)}</div>` : ''}</div>
+      ${p.claudeLocation || p.techStack ? `<section class="focus-sec"><h4>Where it lives</h4>${whereBlock(p, { full: true })}</section>` : ''}
       <section class="focus-sec" id="voice-sec"><h4>Voice notes <span>${p.voice.length || ''}</span></h4>
         ${micButton(p, true)}
         ${p.voiceLink ? `<div class="voice-sheet">${voiceLinkBtn(p.voiceLink, 'Open the voice log linked in the sheet')}<span class="hint">Voice log linked in the sheet</span></div>` : ''}
