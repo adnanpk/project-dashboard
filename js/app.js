@@ -36,6 +36,8 @@ const state = {
     store.get('sortV') === 2 ? store.get('filters', {}) : Object.assign(store.get('filters', {}), { sort: 'recent' }), { q: '' }),
   settings: Object.assign({ url: DEFAULT_URL, token: '', auto: true }, store.get('settings', {})),
   focus: null,
+  section: location.hash === '#subs' ? 'subs' : store.get('section', 'projects'), // top tabs: Projects | Subscriptions
+  subEdit: null,     // subscription row whose reminder form is open
   group: null,       // overview → group drill-down (hash #g=active)
   audio: {},         // file id → { url, status: 'loading'|'ready'|'error', msg }
   playing: null,     // file id currently shown in the player
@@ -171,6 +173,7 @@ const icons = {
   stop: '<svg viewBox="0 0 20 20"><rect x="6" y="6" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg>',
   play: '<svg viewBox="0 0 20 20"><path d="M7 5.5v9l7-4.5-7-4.5Z"/></svg>',
   close: '<svg viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15"/></svg>',
+  bell: '<svg viewBox="0 0 20 20"><path d="M6 8a4 4 0 1 1 8 0c0 4 1.5 5.5 1.5 5.5h-11S6 12 6 8ZM8.5 16a1.6 1.6 0 0 0 3 0"/></svg>',
   check: '<svg viewBox="0 0 20 20"><path d="m5 10.5 3 3 7-7"/></svg>',
   dots: '<svg viewBox="0 0 20 20"><circle cx="5" cy="10" r="1.3" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1.3" fill="currentColor" stroke="none"/></svg>',
   back: '<svg viewBox="0 0 20 20"><path d="M12 15 7 10l5-5"/></svg>',
@@ -393,6 +396,173 @@ function viewLock() {
     </form></div>`;
 }
 
+// ---------- subscriptions ----------
+const SUB_SOON = 30;   // flag subscriptions ending within 30 days
+const SUB_URGENT = 7;  // red within 7 days
+const SUB_CLOSED = ['cancelled', 'canceled', 'renewed'];
+
+function deriveSubs() {
+  const { date: today } = nowRiyadh();
+  return (state.data?.subscriptions || []).map(s => {
+    const status = String(s.status || '').trim();
+    const st = status.toLowerCase();
+    const endIn = s.end ? diffDays(s.end, today) : null;
+    const remIn = s.reminder ? diffDays(s.reminder, today) : null;
+    // Closed: cancelled or renewed, or marked expired with the action written down.
+    const closed = SUB_CLOSED.includes(st) || (st === 'expired' && !!String(s.taken || '').trim());
+    let flag = '';
+    if (!closed && endIn != null) {
+      if (endIn < 0) flag = 'lapsed';
+      else if (endIn <= SUB_URGENT) flag = 'urgent';
+      else if (endIn <= SUB_SOON) flag = 'soon';
+    }
+    return Object.assign({}, s, { status: status || (endIn != null && endIn < 0 ? 'Expired' : 'Active'), endIn, remIn, closed, flag });
+  });
+}
+
+function natureChip(s) {
+  const n = String(s.nature || '').trim();
+  if (!n) return '';
+  const color = /paid/i.test(n) ? 'blue' : /trial/i.test(n) ? 'amber' : /compl/i.test(n) ? 'green' : '';
+  return `<span class="chip ${color}">${esc(n)}</span>`;
+}
+function endChip(s) {
+  if (s.endIn == null) return s.closed ? '' : `<span class="chip outline">No end date</span>`;
+  const d = fmtDate(s.end, { day: 'numeric', month: 'short', year: 'numeric' });
+  if (s.closed) return `<span class="chip outline">${icons.cal}Ended ${d}</span>`;
+  const n = s.endIn;
+  if (n < 0) return `<span class="chip red">🚨 Ended ${-n}d ago · no action logged</span>`;
+  if (n === 0) return `<span class="chip red">${icons.cal}Ends today</span>`;
+  if (n === 1) return `<span class="chip red">${icons.cal}Ends tomorrow</span>`;
+  if (n <= SUB_URGENT) return `<span class="chip red">${icons.cal}Ends in ${n}d</span>`;
+  if (n <= SUB_SOON) return `<span class="chip amber">⚠ Ends in ${n}d</span>`;
+  return `<span class="chip outline">${icons.cal}Ends ${d}</span>`;
+}
+function subStatusChip(s) {
+  const st = s.status.toLowerCase();
+  const color = st === 'active' ? 'green' : st === 'renewed' ? 'blue' : st === 'expired' ? 'red' : '';
+  return `<span class="chip ${s.closed && st === 'expired' ? '' : color}"><i class="status-dot"></i>${esc(s.status)}</span>`;
+}
+function reminderLine(s) {
+  const saving = state.saving.has('sub:' + s.row);
+  if (state.subEdit === s.row) {
+    const { date: today } = nowRiyadh();
+    const suggest = s.reminder || (s.end && s.endIn > 3 ? addDays(s.end, -3) : today);
+    return `<form class="sub-form" data-sub-form="${s.row}" data-stop>
+      <label class="sr-only" for="sub-date-${s.row}">Reminder date for ${attr(s.service)}</label>
+      <input id="sub-date-${s.row}" type="date" value="${attr(suggest)}" min="${attr(today)}" required>
+      <button class="btn primary" type="submit" ${saving ? 'disabled' : ''}>${saving ? 'Saving…' : 'Save reminder'}</button>
+      ${s.reminder ? `<button class="btn ghost danger" type="button" data-sub-clear="${s.row}" ${saving ? 'disabled' : ''}>Remove</button>` : ''}
+      <button class="btn ghost" type="button" data-sub-cancel>Cancel</button>
+      <p class="hint">Adds an event at 9:00 AM to your Google Calendar, with a pop-up the day before and on the day.</p>
+    </form>`;
+  }
+  const when = s.reminder ? fmtDate(s.reminder, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  const cal = s.reminder ? (s.calendarSet ? `<span class="cal-ok" title="${attr(s.calendar || 'In Google Calendar')}">${icons.check}In Calendar</span>`
+    : `<span class="cal-wait" title="${attr(s.calendar || 'The sheet syncs reminders on edit and once a day')}">${esc(s.calendar || 'Calendar sync pending')}</span>`) : '';
+  return `<div class="sub-remind">
+    <span class="where-text">${s.reminder ? `${icons.bell}${esc(when)}${s.remIn != null && s.remIn >= 0 ? ` <small>· ${s.remIn === 0 ? 'today' : s.remIn === 1 ? 'tomorrow' : `in ${s.remIn}d`}</small>` : ''}` : '<span class="muted">Not set</span>'}</span>
+    ${cal}
+    ${s.closed ? '' : `<button class="btn ghost sm" data-sub-remind="${s.row}" data-stop>${saving ? 'Saving…' : s.reminder ? 'Change' : 'Set reminder'}</button>`}
+  </div>`;
+}
+function subCard(s) {
+  const row = (label, v) => v ? `<div class="where-row"><span class="act-label">${label}</span><span class="where-text">${linkify(v)}</span></div>` : '';
+  return `<article class="card sub-card ${s.flag ? 'sub-' + s.flag : ''} ${s.closed ? 'sub-closed' : ''}" aria-label="${attr(s.service)}">
+    <div class="card-head">
+      <div class="card-title">
+        <h3>${esc(s.service)}</h3>
+        <div class="card-meta">${s.account ? `<span>${esc(s.account)}</span>` : ''}${s.start ? `<span class="${s.account ? 'dot' : ''}">Since ${fmtDate(s.start, { day: 'numeric', month: 'short', year: 'numeric' })}</span>` : ''}</div>
+      </div>
+      ${s.amount ? `<span class="sub-amount tnum">${esc(s.amount)}</span>` : ''}
+    </div>
+    <div class="chips">${natureChip(s)}${subStatusChip(s)}${endChip(s)}</div>
+    <div class="where sub-where">
+      ${row('On expiry', s.onExpiry || (s.closed ? '' : 'Not decided'))}
+      <div class="where-row"><span class="act-label">Reminder</span>${reminderLine(s)}</div>
+      ${row('Done', s.taken)}
+      ${row('Notes', s.notes)}
+    </div>
+  </article>`;
+}
+
+function viewSubs() {
+  if (state.data && state.data.subsTab === false) {
+    return `<div class="empty"><h2>Set up the Subscription Dashboard tab</h2>
+      <p>In the sheet, open Extensions → Apps Script, paste the latest Code.gs, then run <b>setupSubscriptionDashboard</b> once. It adds the tab and turns on Google Calendar reminders.</p>
+      <a class="btn" href="https://github.com/adnanpk/project-dashboard/blob/main/SETUP.md#subscriptions" target="_blank" rel="noopener">Open the setup steps</a></div>`;
+  }
+  if (state.data && !('subscriptions' in state.data)) {
+    return `<div class="empty"><h2>Update the Apps Script</h2><p>Your sheet's Apps Script is an older version that doesn't send subscriptions yet. Paste the latest Code.gs and deploy a new version.</p>
+      <a class="btn" href="https://github.com/adnanpk/project-dashboard/blob/main/SETUP.md#subscriptions" target="_blank" rel="noopener">Open the setup steps</a></div>`;
+  }
+  const subs = deriveSubs();
+  if (!subs.length) {
+    return `<div class="empty"><h2>No subscriptions yet</h2><p>Add one row per subscription in the Subscription Dashboard tab of your sheet: service, nature, start and end dates, amount, and what to do on expiry.</p></div>`;
+  }
+  const byEnd = (a, b) => (a.endIn ?? 1e9) - (b.endIn ?? 1e9) || a.service.localeCompare(b.service);
+  const attention = subs.filter(s => s.flag).sort(byEnd);
+  const open = subs.filter(s => !s.flag && !s.closed).sort(byEnd);
+  const closed = subs.filter(s => s.closed).sort((a, b) => (b.end || '').localeCompare(a.end || ''));
+  const upcoming = subs.filter(s => s.reminder && s.remIn >= 0 && !s.closed).sort((a, b) => a.remIn - b.remIn);
+  const grid = items => `<div class="grid sub-grid">${items.map(subCard).join('')}</div>`;
+  return `
+    ${upcoming.length ? `<section class="sub-upcoming" aria-labelledby="sub-up"><h3 class="section-title first" id="sub-up">Upcoming reminders · ${upcoming.length}</h3>
+      <ol class="sub-timeline">${upcoming.slice(0, 8).map(s => `<li class="${s.remIn <= SUB_URGENT ? 'soon' : ''}">
+        <time class="tnum" datetime="${attr(s.reminder)}">${fmtDate(s.reminder, { day: 'numeric', month: 'short' })}</time>
+        <span class="grow"><b>${esc(s.service)}</b><small>${esc(s.onExpiry || 'Decide')}${s.end ? ` · ends ${fmtDate(s.end, { day: 'numeric', month: 'short' })}` : ''}</small></span>
+        ${s.calendarSet ? `<span class="cal-ok" title="In Google Calendar">${icons.check}</span>` : ''}
+      </li>`).join('')}</ol></section>` : ''}
+    <h3 class="section-title ${upcoming.length ? '' : 'first'}">Needs attention · ${attention.length}</h3>
+    ${attention.length ? grid(attention) : `<div class="muted-box">Nothing ends in the next ${SUB_SOON} days.</div>`}
+    ${open.length ? `<h3 class="section-title">Running · ${open.length}</h3>${grid(open)}` : ''}
+    ${closed.length ? `<details class="sub-closed-list"><summary class="section-title">Cancelled, renewed or done · ${closed.length}</summary>${grid(closed)}</details>` : ''}`;
+}
+
+function renderSubStats() {
+  const subs = deriveSubs();
+  const live = subs.filter(s => !s.closed);
+  const soon = live.filter(s => s.endIn != null && s.endIn >= 0 && s.endIn <= SUB_SOON);
+  const urgent = soon.filter(s => s.endIn <= SUB_URGENT).length;
+  const lapsed = live.filter(s => s.flag === 'lapsed').length;
+  const reminders = live.filter(s => s.reminder && s.remIn >= 0).length;
+  const next = live.filter(s => s.endIn != null && s.endIn >= 0).sort((a, b) => a.endIn - b.endIn)[0];
+  return `
+    <div><div class="stat-label">Running</div><div class="stat-value tnum">${live.length - lapsed}</div></div>
+    <div><div class="stat-label">Ending in ${SUB_SOON}d</div><div class="stat-value tnum ${urgent ? 'red' : soon.length ? 'amber' : ''}">${soon.length}</div></div>
+    <div><div class="stat-label">Ended, no action</div><div class="stat-value tnum ${lapsed ? 'red' : ''}">${lapsed}</div></div>
+    <div class="goal-progress sub-next"><div class="goal-progress-head"><span>Next to end</span><span>${reminders} reminder${reminders === 1 ? '' : 's'} set</span></div>
+      <div class="sub-next-name">${next ? `<b>${esc(next.service)}</b> · ${next.endIn === 0 ? 'today' : next.endIn === 1 ? 'tomorrow' : `in ${next.endIn} days`}` : '<span class="muted">Nothing scheduled</span>'}</div></div>`;
+}
+
+async function setSubReminder(row, date) {
+  const s = state.data.subscriptions.find(x => x.row === row);
+  if (!s) return;
+  state.saving.add('sub:' + row); render();
+  try {
+    const res = await apiPost({ action: 'subReminder', row, service: s.service, date: date || '' });
+    if (res.sub) Object.assign(s, res.sub);
+    else Object.assign(s, { reminder: date || '', calendarSet: !!date, calendar: date ? '✅ ' + date : '' });
+    state.subEdit = null;
+    toast(date ? `Reminder for ${s.service} set for ${fmtDate(date, { day: 'numeric', month: 'short' })}. It's in your Google Calendar.` : `Reminder for ${s.service} removed.`);
+  } catch (e) {
+    toast(`Couldn't save the reminder. ${e.message}`, { err: true });
+  } finally {
+    state.saving.delete('sub:' + row); render();
+  }
+}
+
+function setSection(sec) {
+  state.section = sec === 'subs' ? 'subs' : 'projects';
+  store.set('section', state.section);
+  state.subEdit = null;
+  const h = state.section === 'subs' ? '#subs' : state.group ? '#g=' + state.group : '';
+  if (location.hash !== h) history.pushState(null, '', h || location.pathname + location.search);
+  if (state.focus) closeFocus();
+  render();
+  window.scrollTo(0, 0);
+}
+
 // ---------- header ----------
 function renderHeader(list) {
   const { date } = nowRiyadh();
@@ -405,12 +575,15 @@ function renderHeader(list) {
   const goalSum = picks.reduce((s, p) => s + (p.goal || 30), 0);
   const got = picks.reduce((s, p) => s + Math.min(p.minsToday, p.goal || 30), 0);
   const pct = goalSum ? Math.round((got / goalSum) * 100) : 0;
-  $('#stats').innerHTML = state.data ? `
+  const subs = state.section === 'subs';
+  document.querySelectorAll('.sections button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.section === state.section)));
+  document.body.dataset.section = state.section;
+  $('#stats').innerHTML = !state.data ? '' : subs ? renderSubStats() : `
     <div><div class="stat-label">Active daily</div><div class="stat-value tnum">${daily.length}</div></div>
     <div><div class="stat-label">Not seen ${NEGLECT_WARN}d+</div><div class="stat-value tnum ${alerts ? 'red' : neglected.length ? 'amber' : ''}">${neglected.length}</div></div>
     <div><div class="stat-label">Today's 5 done</div><div class="stat-value tnum">${done}<small>/ ${picks.length}</small></div></div>
     <div class="goal-progress"><div class="goal-progress-head"><span>Today's 5 · 30 min each</span><span class="tnum"><b>${got}</b> / ${goalSum} min · ${pct}%</span></div>
-      <div class="bar ${pct >= 100 ? 'green' : pct > 0 ? '' : ''}"><i style="width:${pct}%"></i></div></div>` : '';
+      <div class="bar ${pct >= 100 ? 'green' : pct > 0 ? '' : ''}"><i style="width:${pct}%"></i></div></div>`;
   const sync = $('#sync');
   sync.className = 'sync' + (state.error && state.data ? ' err' : state.lastSync ? ' live' : '');
   sync.textContent = state.loading ? 'Syncing…' : state.error && state.data ? 'Sync failed' : state.lastSync ? `Synced ${state.lastSync.toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' })}` : '';
@@ -435,7 +608,8 @@ function render() {
   const main = $('#main');
   const locked = !state.data;
   document.body.classList.toggle('locked', locked);
-  $('.toolbar').hidden = locked;
+  $('.toolbar').hidden = locked || state.section === 'subs';
+  $('.sections').hidden = locked;
   $('#btn-signout').hidden = locked; $('#btn-refresh').hidden = locked;
   $('#stats').hidden = locked;
   if (locked) {
@@ -452,6 +626,14 @@ function render() {
   }
   const scroll = main.querySelector('.board, .timeline');
   const sx = scroll ? scroll.scrollLeft : 0;
+  if (state.section === 'subs') {
+    const focused = document.activeElement?.closest?.('[data-sub-form]') ? null : document.activeElement?.dataset?.subRemind;
+    main.innerHTML = viewSubs();
+    const f = state.subEdit && main.querySelector(`[data-sub-form="${state.subEdit}"] input`);
+    if (f && !state.saving.has('sub:' + state.subEdit) && document.activeElement !== f) f.focus({ preventScroll: true });
+    else if (focused) main.querySelector(`[data-sub-remind="${focused}"]`)?.focus({ preventScroll: true });
+    return;
+  }
   main.innerHTML = ({ board: viewBoard, grid: viewGrid, schedule: viewSchedule, timeline: viewTimeline }[state.view] || viewBoard)(list);
   const sc = main.querySelector('.board, .timeline'); if (sc) sc.scrollLeft = sx;
   if (state.focus) renderFocus(list);
@@ -593,7 +775,7 @@ async function apiAudio(id) {
   return json;
 }
 async function apiPost(body) {
-  if (mock) { await new Promise(r => setTimeout(r, 400)); return body.action === 'voice' ? { ok: true, id: 'mock' + Date.now(), name: `${body.project} — test.webm`, url: '#', created: new Date().toISOString() } : { ok: true }; }
+  if (mock) { await new Promise(r => setTimeout(r, 400)); return body.action === 'subReminder' ? { ok: true } : body.action === 'voice' ? { ok: true, id: 'mock' + Date.now(), name: `${body.project} — test.webm`, url: '#', created: new Date().toISOString() } : { ok: true }; }
   const res = await fetch(state.settings.url, { method: 'POST', body: JSON.stringify(Object.assign({ token: state.settings.token }, body)) });
   const json = await res.json();
   if (!json.ok) throw new Error(json.error || 'Write failed');
@@ -725,6 +907,13 @@ function saveFilters() { store.set('filters', Object.assign({}, state.filters, {
 function bind() {
   document.addEventListener('click', e => {
     const t = e.target;
+    const sec = t.closest('.sections [data-section]');
+    if (sec) { setSection(sec.dataset.section); return; }
+    const sr = t.closest('[data-sub-remind]');
+    if (sr) { state.subEdit = Number(sr.dataset.subRemind); render(); return; }
+    if (t.closest('[data-sub-cancel]')) { const r = state.subEdit; state.subEdit = null; render(); $(`[data-sub-remind="${r}"]`)?.focus(); return; }
+    const sc = t.closest('[data-sub-clear]');
+    if (sc) { setSubReminder(Number(sc.dataset.subClear), ''); return; }
     if (t.closest('[data-stop]')) { e.stopPropagation(); return; }
     const mi = t.closest('#menu [data-menu-status]');
     if (mi) { const n = menuFor; closeMenu(); setStatus(n, mi.dataset.menuStatus); return; }
@@ -757,7 +946,7 @@ function bind() {
     if (pb) { const f = state.filters.priority; const i = f.indexOf(pb.dataset.p); i < 0 ? f.push(pb.dataset.p) : f.splice(i, 1); saveFilters(); }
   });
   document.addEventListener('change', e => { if (e.target.matches('#move-select')) setStatus(e.target.dataset.move, e.target.value); });
-  window.addEventListener('popstate', () => { state.group = groupFromHash(); render(); });
+  window.addEventListener('popstate', () => { state.group = groupFromHash(); state.section = location.hash === '#subs' ? 'subs' : 'projects'; store.set('section', state.section); state.subEdit = null; render(); });
   window.addEventListener('resize', closeMenu);
   document.addEventListener('scroll', closeMenu, true);
   $('#scrim').addEventListener('click', () => { if (!$('#settings').hidden) closeSettings(); else closeFocus(); });
@@ -786,6 +975,8 @@ function bind() {
   };
   document.addEventListener('submit', async e => {
     if (e.target.id === 'lock-form') { e.preventDefault(); await connect($('#l-url').value || DEFAULT_URL, $('#l-token').value, $('#l-error')); }
+    const sf = e.target.closest?.('[data-sub-form]');
+    if (sf) { e.preventDefault(); const v = sf.querySelector('input[type=date]').value; if (v) setSubReminder(Number(sf.dataset.subForm), v); }
   });
   $('#settings-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -819,6 +1010,7 @@ function bind() {
     const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
     const overlay = !$('#focus').hidden ? $('#focus') : !$('#settings').hidden ? $('#settings') : null;
     if (e.key === 'Escape' && menuFor) { closeMenu(true); return; }
+    if (e.key === 'Escape' && state.subEdit) { const r = state.subEdit; state.subEdit = null; render(); $(`[data-sub-remind="${r}"]`)?.focus(); return; }
     if (e.key === 'Escape') { if (!$('#settings').hidden) closeSettings(); else if (state.focus) closeFocus(); else if (document.activeElement === $('#f-search')) $('#f-search').blur(); return; }
     if (e.key === 'Tab' && overlay) {
       const f = [...overlay.querySelectorAll('button:not([disabled]), a[href], input, select, [tabindex="0"]')].filter(x => x.offsetParent);
@@ -832,13 +1024,15 @@ function bind() {
     if (e.key === '/') { e.preventDefault(); $('#f-search').focus(); }
     else if (e.key === 'r') refresh();
     else if (e.key === 't') toggleTheme();
+    else if (e.key === 'p' || e.key === 's') setSection(e.key === 's' ? 'subs' : 'projects');
+    else if (state.section === 'subs') return;
     else if (['1', '2', '3', '4'].includes(e.key)) { state.view = ['board', 'grid', 'schedule', 'timeline'][e.key - 1]; store.set('view', state.view); render(); }
   });
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && state.data && state.settings.auto && Date.now() - (state.lastSync || 0) > REFRESH_MS) refresh({ quiet: true });
   });
-  setInterval(() => { if (state.data && !state.rec) render(); }, 60 * 1000); // keep "now" line and dates current
+  setInterval(() => { if (state.data && !state.rec && !state.subEdit) render(); }, 60 * 1000); // keep "now" line and dates current
 }
 
 // ---------- card action menu ----------

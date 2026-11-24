@@ -11,7 +11,8 @@ A dark, focused dashboard for the Master Project Tracker Google Sheet.
 - Daily 30-minute goal rings, weekly progress, due-date countdowns.
 - 🎙 play buttons for voice notes linked in the sheet's *Voice Log Link* columns (projects and log rows).
 - Voice notes recorded in the browser and saved to Google Drive.
-- Reads the sheet on load and every 5 minutes; writes back only the status column.
+- Reads the sheet on load and every 5 minutes; writes back only the status column and a subscription's Reminder Date.
+- **Subscriptions** tab: everything from the sheet's *Subscription Dashboard* tab, with subscriptions ending within 30 days flagged, an upcoming-reminders strip, and a *Set reminder* button that puts a reminder in Google Calendar.
 - Passcode protected: no project data is stored in this repository or served by the page.
 
 Plain HTML, CSS and JavaScript, no build step. The backend is [`apps-script/Code.gs`](apps-script/Code.gs), deployed from the sheet.

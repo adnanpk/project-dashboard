@@ -8,6 +8,16 @@
  *   POST {action:'status', …}      → writes ONLY column E (Current Status) of one project row
  *   POST {action:'voice', …}       → saves an audio file to Drive:
  *                                    Al-Marfat/Project Voice Notes/<Project Name>/
+ *   POST {action:'subReminder', …} → sets the Reminder Date of one subscription and syncs its
+ *                                    Google Calendar reminder
+ *
+ * SUBSCRIPTIONS ("Subscription Dashboard" tab):
+ *   Run setupSubscriptionDashboard() once from the editor. It adds the tab (if missing) with its
+ *   headers and dropdowns, and installs two triggers: a daily sync and an on-edit sync. Whenever a
+ *   row has a Reminder Date, a Google Calendar event is created in the calendar of the account that
+ *   owns this script, at 9:00 AM Riyadh time on that date, with a pop-up and an email reminder.
+ *   The event id is kept in the hidden "Calendar Event ID" column, so reminders are never duplicated:
+ *   changing the date moves the event, clearing it deletes the event.
  *
  * Columns are found by their header text, so new sheet columns (Priority Score, Days Since Logged,
  * Today's Pick, Voice Log Link, Claude Location, Tech Stack & Links) are picked up automatically. Only the Current Status cell is written;
@@ -26,6 +36,14 @@ const LOG_DAYS = 30;               // how much log history to send to the dashbo
 const VOICE_ROOT = ['Al-Marfat', 'Project Voice Notes'];
 const ALLOWED_STATUSES = ['Active - Daily', 'Waiting on External', 'On Hold', 'Completed'];
 
+const SUBS_TAB = 'Subscription Dashboard';
+const SUBS_HEADERS = ['Service', 'Nature', 'Account / Email', 'Start Date', 'End Date', 'Amount Paid',
+  'Action on Expiry', 'Reminder Date', 'Calendar Reminder', 'Action Taken', 'Status', 'Notes', 'Calendar Event ID'];
+const SUBS_NATURES = ['Paid', 'Trial', 'Free', 'Complimentary'];
+const SUBS_ACTIONS = ['Renew', 'Cancel', 'Downgrade', 'Upgrade', 'Switch to free', 'Decide'];
+const SUBS_STATUSES = ['Active', 'Expired', 'Cancelled', 'Renewed'];
+const REMINDER_HOUR = 9;           // Calendar reminders sit at 9:00 AM Riyadh time on the Reminder Date
+
 function doGet(e) {
   return handle_(() => {
     checkToken_(e.parameter.token);
@@ -43,6 +61,7 @@ function doPost(e) {
     checkToken_(body.token);
     if (body.action === 'status') return setStatus_(body.project, body.status);
     if (body.action === 'voice') return saveVoice_(body.project, body.mime, body.data);
+    if (body.action === 'subReminder') return setSubReminder_(body.row, body.service, body.date);
     throw new Error('Unknown action: ' + body.action);
   });
 }
@@ -181,7 +200,9 @@ function read_() {
     });
   }
 
-  return { ok: true, version: 2, generatedAt: new Date().toISOString(), projects, log, voiceNotes: listVoiceNotes_() };
+  const subs = readSubs_();
+  return { ok: true, version: 3, generatedAt: new Date().toISOString(), projects, log, voiceNotes: listVoiceNotes_(),
+           subscriptions: subs.rows, subsTab: subs.exists };
 }
 
 function listVoiceNotes_() {
@@ -260,6 +281,191 @@ function audio_(id) {
   let mime = String(blob.getContentType() || '').split(';')[0];
   if (/\.m4a$/i.test(file.getName())) mime = 'audio/mp4';
   return { ok: true, mime: mime || 'audio/webm', data: Utilities.base64Encode(blob.getBytes()) };
+}
+
+// ---------- subscriptions ----------
+
+const S_COLS = {
+  service:  [/service|subscription/i, 0],
+  nature:   [/nature|type|kind/i, 1],
+  account:  [/account|email/i, 2],
+  start:    [/start/i, 3],
+  end:      [/^end|expir|renewal/i, 4, /action/i],
+  amount:   [/amount|paid|price|cost/i, 5],
+  onExpiry: [/action on expiry|on expiry/i, 6],
+  reminder: [/reminder date/i, 7],
+  calendar: [/calendar reminder/i, 8],
+  taken:    [/action taken|done at expiry/i, 9],
+  status:   [/status/i, 10],
+  notes:    [/note/i, 11],
+  eventId:  [/event id/i, 12],
+};
+
+function subsSheet_() { return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SUBS_TAB); }
+function subsCols_(sh) { return colMap_(sh.getRange(1, 1, 1, Math.max(SUBS_HEADERS.length, sh.getLastColumn())).getDisplayValues()[0], S_COLS); }
+
+function readSubs_() {
+  const sh = subsSheet_();
+  if (!sh) return { exists: false, rows: [] };
+  const last = sh.getLastRow();
+  if (last < 2) return { exists: true, rows: [] };
+  const c = subsCols_(sh);
+  const width = Math.max(SUBS_HEADERS.length, sh.getLastColumn());
+  const rng = sh.getRange(2, 1, last - 1, width);
+  const raw = rng.getValues(), disp = rng.getDisplayValues();
+  const rows = [];
+  disp.forEach((r, i) => {
+    const g = k => (c[k] >= 0 ? r[c[k]] : '');
+    const dt = k => { const v = c[k] >= 0 ? raw[i][c[k]] : ''; return v instanceof Date ? fmt_(v) : ''; };
+    if (!String(g('service')).trim()) return;
+    rows.push({
+      row: i + 2, service: g('service'), nature: g('nature'), account: g('account'),
+      start: dt('start'), end: dt('end'), amount: g('amount'), onExpiry: g('onExpiry'),
+      reminder: dt('reminder'), calendar: g('calendar'), calendarSet: !!(c.eventId >= 0 && r[c.eventId]),
+      taken: g('taken'), status: g('status'), notes: g('notes'),
+    });
+  });
+  return { exists: true, rows };
+}
+
+/** Run once from the editor: adds the Subscription Dashboard tab (if missing) and installs the triggers. */
+function setupSubscriptionDashboard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(SUBS_TAB);
+  if (!sh) {
+    sh = ss.insertSheet(SUBS_TAB);
+    sh.getRange(1, 1, 1, SUBS_HEADERS.length).setValues([SUBS_HEADERS]).setFontWeight('bold').setBackground('#1a1a1f').setFontColor('#ededf0');
+    sh.setFrozenRows(1);
+    const rows = 200;
+    const list = (col, values) => sh.getRange(2, col, rows, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(true).build());
+    list(2, SUBS_NATURES); list(7, SUBS_ACTIONS); list(11, SUBS_STATUSES);
+    [4, 5, 8].forEach(col => sh.getRange(2, col, rows, 1).setNumberFormat('yyyy-mm-dd')
+      .setDataValidation(SpreadsheetApp.newDataValidation().requireDate().setAllowInvalid(false).build()));
+    sh.getRange(1, 9).setNote('Filled in by the script. Do not type here.');
+    sh.getRange(1, 1).setNote('One row per subscription. Set a Reminder Date and a Google Calendar reminder is created at 9:00 AM that day.');
+    [180, 120, 200, 110, 110, 110, 140, 120, 190, 200, 100, 240, 120].forEach((w, i) => sh.setColumnWidth(i + 1, w));
+    sh.hideColumns(13);
+  }
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (['subsDailySync', 'subsOnEdit'].indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('subsDailySync').timeBased().everyDays(1).atHour(7).inTimezone(TZ).create();
+  ScriptApp.newTrigger('subsOnEdit').forSpreadsheet(ss).onEdit().create();
+  syncSubscriptionReminders();
+  return 'Subscription Dashboard ready';
+}
+
+/** Adds a "Subscriptions" menu to the sheet. */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Subscriptions')
+    .addItem('Sync calendar reminders now', 'syncSubscriptionReminders')
+    .addItem('Set up the Subscription Dashboard tab', 'setupSubscriptionDashboard')
+    .addToUi();
+}
+
+/** Daily trigger. */
+function subsDailySync() { syncSubscriptionReminders(); }
+
+/** Installable on-edit trigger: re-syncs the edited rows of the Subscription Dashboard tab. */
+function subsOnEdit(e) {
+  const r = e && e.range;
+  if (!r || r.getSheet().getName() !== SUBS_TAB || r.getLastRow() < 2) return;
+  const sh = r.getSheet();
+  const c = subsCols_(sh);
+  if (r.getColumn() === c.calendar + 1 && r.getNumColumns() === 1) return; // our own writes
+  for (let row = Math.max(2, r.getRow()); row <= r.getLastRow(); row++) syncSubRow_(sh, c, row);
+}
+
+/** Creates, moves or removes the Calendar reminder for every row. Safe to run any time. */
+function syncSubscriptionReminders() {
+  const sh = subsSheet_();
+  if (!sh || sh.getLastRow() < 2) return 0;
+  const c = subsCols_(sh);
+  let n = 0;
+  for (let row = 2; row <= sh.getLastRow(); row++) if (syncSubRow_(sh, c, row)) n++;
+  return n;
+}
+
+function syncSubRow_(sh, c, row) {
+  if (c.reminder < 0 || c.eventId < 0) return false;
+  const width = Math.max(SUBS_HEADERS.length, sh.getLastColumn());
+  const vals = sh.getRange(row, 1, 1, width).getValues()[0];
+  const disp = sh.getRange(row, 1, 1, width).getDisplayValues()[0];
+  const g = k => (c[k] >= 0 ? disp[c[k]] : '');
+  const service = String(g('service')).trim();
+  const when = vals[c.reminder];
+  const eventId = String(vals[c.eventId] || '');
+  const cal = CalendarApp.getDefaultCalendar();
+  let ev = null;
+  if (eventId) { try { ev = cal.getEventById(eventId); } catch (err) { ev = null; } }
+  const setCell = (k, v) => { if (c[k] >= 0 && String(vals[c[k]]) !== String(v)) sh.getRange(row, c[k] + 1).setValue(v); };
+
+  if (!service || !(when instanceof Date)) {
+    if (ev) ev.deleteEvent();
+    setCell('eventId', ''); setCell('calendar', '');
+    return false;
+  }
+  const day = fmt_(when);
+  const start = new Date(day + 'T' + ('0' + REMINDER_HOUR).slice(-2) + ':00:00+03:00');
+  const end = new Date(start.getTime() + 15 * 60000);
+  const action = String(g('onExpiry') || 'Decide').trim();
+  const endDay = c.end >= 0 && vals[c.end] instanceof Date ? fmt_(vals[c.end]) : '';
+  const title = '🔔 ' + service + ': ' + action + (endDay ? ' (ends ' + endDay + ')' : '');
+  const desc = [
+    'Subscription reminder from the Master Project Tracker.',
+    'Service: ' + service,
+    g('nature') ? 'Nature: ' + g('nature') : '',
+    g('account') ? 'Account: ' + g('account') : '',
+    endDay ? 'Ends: ' + endDay : '',
+    g('amount') ? 'Amount paid: ' + g('amount') : '',
+    'Action on expiry: ' + action,
+    g('notes') ? 'Notes: ' + g('notes') : '',
+    '',
+    'When done, fill in "Action Taken" and "Status" in the sheet: ' + SpreadsheetApp.getActiveSpreadsheet().getUrl() + '#gid=' + sh.getSheetId(),
+  ].filter(x => x !== '').join('\n');
+
+  if (ev) {
+    if (ev.getStartTime().getTime() !== start.getTime()) ev.setTime(start, end);
+    if (ev.getTitle() !== title) ev.setTitle(title);
+    if (ev.getDescription() !== desc) ev.setDescription(desc);
+  } else {
+    if (start.getTime() < Date.now() - 864e5) { setCell('calendar', 'Date has passed, no reminder'); return false; }
+    ev = cal.createEvent(title, start, end, { description: desc });
+    ev.removeAllReminders();
+    ev.addPopupReminder(0);
+    ev.addPopupReminder(24 * 60);
+    ev.addEmailReminder(0);
+    setCell('eventId', ev.getId());
+  }
+  setCell('calendar', '✅ ' + Utilities.formatDate(start, TZ, 'd MMM yyyy, h:mm a'));
+  return true;
+}
+
+/** Dashboard write: sets only the Reminder Date of one subscription row, then syncs its Calendar event. */
+function setSubReminder_(row, service, date) {
+  row = Number(row);
+  if (!row || row < 2) throw new Error('Missing subscription row');
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) throw new Error('Reminder date must look like 2026-12-01');
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(10000);
+  try {
+    const sh = subsSheet_();
+    if (!sh) throw new Error('The Subscription Dashboard tab does not exist yet. Run setupSubscriptionDashboard() in Apps Script.');
+    const c = subsCols_(sh);
+    if (String(sh.getRange(row, c.service + 1).getDisplayValue()).trim() !== String(service || '').trim()) {
+      throw new Error('The sheet changed. Refresh and try again.');
+    }
+    const cell = sh.getRange(row, c.reminder + 1);
+    if (date) { const [y, m, d] = date.split('-').map(Number); cell.setValue(new Date(y, m - 1, d)); }
+    else cell.clearContent();
+    SpreadsheetApp.flush();
+    syncSubRow_(sh, c, row);
+    const sub = readSubs_().rows.find(s => s.row === row);
+    return { ok: true, sub };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---------- helpers ----------
