@@ -287,8 +287,10 @@ function todaySection(list) {
   const picks = applyFilters(picksOf(list), { ignoreCompleted: true });
   const done = picks.filter(p => p.daily && p.minsToday >= p.goal).length;
   const src = list.picksFromSheet ? "From the sheet's Today's Pick column" : 'Highest priority score: priority plus days since last logged';
+  const momentum = state.data?.momentumToday
+    ? ' · ⚡ Momentum day: projects you don\'t touch today are deferred, not neglected (due dates still count)' : '';
   return `<section class="today5" aria-labelledby="t5-title">
-    <div class="t5-head"><h2 id="t5-title">Today's ${picks.length === PICKS ? '5' : picks.length}</h2><span class="hint">${done} of ${picks.length} done · ${src}</span></div>
+    <div class="t5-head"><h2 id="t5-title">Today's ${picks.length === PICKS ? '5' : picks.length}</h2><span class="hint">${done} of ${picks.length} done · ${src}${momentum}</span></div>
     ${picks.length ? `<div class="picks">${picks.map(pickCard).join('')}</div>` : `<div class="muted-box">No active projects ${state.filters.q || state.filters.category || state.filters.priority.length ? 'match your filters' : 'to pick today'}.</div>`}
   </section>`;
 }

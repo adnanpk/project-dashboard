@@ -115,3 +115,28 @@ If `Code.gs` changes, paste the new version, then **Deploy → Manage deployment
 ## Shortcuts
 
 `P` projects · `S` subscriptions · `/` search · `1`–`4` switch views · `R` refresh · `T` light/dark · `Esc` close
+
+## Momentum deferral
+
+On a day when you put **2× or more** of a project's daily goal into it (60+ minutes on a 30-minute goal), the projects you didn't touch that day are **deferred**, not neglected. They go back to normal tracking the next day.
+
+Turn it on once:
+
+1. Paste the latest `Code.gs` into Extensions → Apps Script and save.
+2. In the function picker choose **setupMomentumDeferral** and click **Run** (or use the sheet menu **Subscriptions → Turn on momentum deferral**).
+3. **Deploy → Manage deployments → pencil icon → Version: New version → Deploy** (the URL stays the same).
+
+What it changes:
+
+- **Daily Voice Log** gets a formula column **Momentum Day**. A ⚡ marks every log row on a momentum day. Never type in it.
+- **Active Projects → Days Since Logged**: momentum days since a project was last logged are not counted, so its Priority Score and Today's Pick don't jump.
+- **Today's Goal Status**: an untouched project shows `⏸ Deferred` instead of `🔴 Pending` on a momentum day.
+- **Reminder Alert**: `⚠️ NEGLECTED` now reads the momentum-aware Days Since Logged.
+- The dashboard's Today's 5 header says when today is a momentum day.
+
+Limits that keep it honest:
+
+- **Not two days in a row on the same project.** If the same project gets 2× again the next day, that second day is not a momentum day.
+- **Due dates are never deferred.** A project due today or overdue stays `🔴 Pending`, `⏰ DUE TODAY` or `🚨 OVERDUE`.
+- **Touched counts as touched.** A project you worked on but under goal stays `⏳ Partial`.
+- **It starts the day you switch it on.** Earlier days are not rewritten (the start date is kept in the Script property `MOMENTUM_START`).
