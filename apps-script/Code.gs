@@ -11,6 +11,19 @@
  *   POST {action:'subReminder', …} → sets the Reminder Date of one subscription and syncs its
  *                                    Google Calendar reminder
  *
+ * MOMENTUM DEFERRAL (run setupMomentumDeferral() once from the editor):
+ *   A "momentum day" is a day on which one project got 2× or more of its Daily Goal (60+ min on a
+ *   30-min goal). On that day, every project you did NOT touch is deferred instead of neglected:
+ *   Today's Goal Status shows "⏸ Deferred" instead of "🔴 Pending", and the day is not added to its
+ *   Days Since Logged (so Priority Score, Today's Pick and ⚠ NEGLECTED don't jump). Next day, normal
+ *   tracking resumes. Honesty limits, built into the formulas:
+ *     • Same project 2× two days in a row: only the first day counts. A streak is not momentum.
+ *     • Due dates are never deferred: a project due today or overdue keeps 🔴 Pending / 🚨 OVERDUE.
+ *     • Projects you touched (but under goal) stay ⏳ Partial; deferral is only for untouched ones.
+ *     • It starts on the day you first run it (kept in Script property MOMENTUM_START); history isn't rewritten.
+ *   It adds a formula column "Momentum Day" (⚡) to the Daily Voice Log and rewrites the formulas in
+ *   Days Since Logged, Today's Goal Status and Reminder Alert on Active Projects. Nothing else changes.
+ *
  * SUBSCRIPTIONS ("Subscription Dashboard" tab):
  *   Run setupSubscriptionDashboard() once from the editor. It adds the tab (if missing) with its
  *   headers and dropdowns, and installs two triggers: a daily sync and an on-edit sync. Whenever a
@@ -100,6 +113,7 @@ const L_COLS = {
   next:      [/next/i, 4],
   notes:     [/note|blocker/i, 5, /voice/i],
   voiceLink: [/voice/i, -1],
+  momentum:  [/momentum/i, -1],
 };
 
 function colMap_(headers, spec) {
@@ -196,12 +210,14 @@ function read_() {
       if (!(date instanceof Date) || !g(r, 'project') || date < cutoff) return;
       log.push({ date: fmt_(date), project: String(g(r, 'project')), minutes: Number(g(r, 'minutes')) || 0,
                  work: String(g(r, 'work') || ''), next: String(g(r, 'next') || ''), notes: String(g(r, 'notes') || ''),
-                 voiceLink: vCol >= 0 ? linkOf_(vDisp[i][0], vForm[i][0], vRich[i][0]) : '' });
+                 voiceLink: vCol >= 0 ? linkOf_(vDisp[i][0], vForm[i][0], vRich[i][0]) : '',
+                 momentum: c.momentum >= 0 && String(r[c.momentum]).indexOf('⚡') >= 0 });
     });
   }
 
   const subs = readSubs_();
-  return { ok: true, version: 3, generatedAt: new Date().toISOString(), projects, log, voiceNotes: listVoiceNotes_(),
+  const momentumToday = log.some(l => l.momentum && l.date === fmt_(new Date()));
+  return { ok: true, version: 4, momentumToday, generatedAt: new Date().toISOString(), projects, log, voiceNotes: listVoiceNotes_(),
            subscriptions: subs.rows, subsTab: subs.exists };
 }
 
@@ -244,6 +260,96 @@ function setStatus_(project, status) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------- momentum deferral ----------
+
+const MOMENTUM_HEADER = 'Momentum Day';
+const MOMENTUM_MARK = '⚡';
+
+function colLetter_(i) { // 0-based index → A1 letters
+  let n = i + 1, s = '';
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+/**
+ * Run once from the editor (safe to run again). Adds the "Momentum Day" column to the Daily Voice Log
+ * and rewrites three formula columns on Active Projects so momentum days defer untouched projects.
+ */
+function setupMomentumDeferral() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lg = ss.getSheetByName(LOG_TAB);
+  const sh = ss.getSheetByName(PROJECTS_TAB);
+  const L = "'" + LOG_TAB + "'!";
+  const P = "'" + PROJECTS_TAB + "'!";
+
+  // 1) Daily Voice Log: one array formula in the header cell marks ⚡ on every log row of a momentum day.
+  const lw = Math.max(7, lg.getLastColumn());
+  const lc = colMap_(lg.getRange(1, 1, 1, lw).getDisplayValues()[0], L_COLS);
+  ['date', 'project', 'minutes'].forEach(k => { if (lc[k] < 0) throw new Error('Daily Voice Log: column not found: ' + k); });
+  let mCol = lc.momentum;
+  if (mCol < 0) {
+    const heads = lg.getRange(1, 1, 1, lw).getDisplayValues()[0];
+    let lastHead = -1; heads.forEach((h, i) => { if (String(h).trim()) lastHead = i; });
+    mCol = lastHead + 1;
+  }
+  // The ⚡ marks spill down from the header cell, so nothing else may be typed below it.
+  const below = lg.getRange(2, mCol + 1, Math.max(1, lg.getMaxRows() - 1), 1);
+  const typed = below.getFormulas().some(r => r[0]) ||
+    below.getValues().some(r => r[0] !== '' && (lc.momentum < 0 || String(r[0]) !== MOMENTUM_MARK));
+  if (typed) throw new Error('Daily Voice Log column ' + colLetter_(mCol) + ' has entries below the header. Clear them, then run again.');
+  const A = colLetter_(lc.date), B = colLetter_(lc.project), C = colLetter_(lc.minutes);
+  // Deferral starts on the day this is first switched on; past days are not rewritten.
+  const props = PropertiesService.getScriptProperties();
+  let start = props.getProperty('MOMENTUM_START');
+  if (!start) { start = fmt_(new Date()); props.setProperty('MOMENTUM_START', start); }
+  const [sy, sm, sd] = start.split('-').map(Number);
+  // MAP walks the log row by row: d = that row's date, p = its project.
+  const col2 = x => x + '2:' + x;
+  const momentum =
+    '={"' + MOMENTUM_HEADER + '";MAP(' + col2(A) + ',' + col2(B) + ',LAMBDA(d,p,IF(OR(d="",d<DATE(' + sy + ',' + sm + ',' + sd + ')),"",LET(' +
+      'g,IFERROR(VLOOKUP(p,' + P + 'B3:F,5,FALSE)*1,0),' +
+      't,SUMIFS(' + col2(C) + ',' + col2(A) + ',d,' + col2(B) + ',p),' +
+      'y,SUMIFS(' + col2(C) + ',' + col2(A) + ',d-1,' + col2(B) + ',p),' +
+      'IF((g>0)*(t>=2*g)*(y<2*g),"' + MOMENTUM_MARK + '","")))))}';
+  // Active Projects B and F are referenced by letter in the formula above; check they're still there.
+  const pc = colMap_(sh.getRange(FIRST_DATA_ROW - 1, 1, 1, Math.max(13, sh.getLastColumn())).getDisplayValues()[0], P_COLS);
+  const pHeads = sh.getRange(FIRST_DATA_ROW - 1, 1, 1, 6).getDisplayValues()[0];
+  if (!/name/i.test(pHeads[1]) || !/goal/i.test(pHeads[5])) throw new Error('Active Projects: expected Project Name in B and Daily Goal in F.');
+  lg.getRange(1, mCol + 1).setFormula(momentum)
+    .setNote('Formula column. ⚡ = a momentum day: one project got 2× its daily goal (and did not also get 2× the day before). ' +
+             'On ⚡ days, projects you did not touch are deferred, not neglected. Never type in this column.');
+  lg.getRange(1, mCol + 1).setFontWeight('bold');
+
+  // 2) Active Projects: rewrite the three formula columns, row by row (relative references).
+  ['daysSince', 'goalStatus', 'alert', 'minsToday', 'status', 'due'].forEach(k => {
+    if (pc[k] < 0) throw new Error('Active Projects: column not found: ' + k);
+  });
+  const col = k => colLetter_(pc[k]);
+  const M = L + colLetter_(mCol) + ':' + colLetter_(mCol);
+  const LA = L + A + ':' + A, LB = L + B + ':' + B;
+  const mDay = 'COUNTIFS(' + LA + ',TODAY(),' + M + ',"' + MOMENTUM_MARK + '")>0';
+  const lastRow = sh.getMaxRows();   // every data row, filled or empty, like the existing formulas
+  const n = lastRow - FIRST_DATA_ROW + 1;
+  const days = [], status = [], alert = [];
+  for (let r = FIRST_DATA_ROW; r <= lastRow; r++) {
+    const b = 'B' + r, e = col('status') + r, f = 'F' + r, g = col('daysSince') + r, h = col('minsToday') + r, l = col('due') + r;
+    // Days Since Logged = calendar days since last log, minus momentum days since then (up to today).
+    days.push(['=IF(' + b + '="","",IF(COUNTIF(' + LB + ',' + b + ')=0,999,LET(last,MAXIFS(' + LA + ',' + LB + ',' + b + '),' +
+      'TODAY()-last-COUNTUNIQUEIFS(' + LA + ',' + M + ',"' + MOMENTUM_MARK + '",' + LA + ',">"&last,' + LA + ',"<="&TODAY()))))']);
+    // Today's Goal Status: untouched + momentum day + not due/overdue → ⏸ Deferred.
+    status.push(['=IF(' + b + '="","",IF(' + e + '<>"Active - Daily","—",IF(' + h + '>=' + f + ',"✅ Done",IF(' + h + '>0,"⏳ Partial",' +
+      'IF(AND(' + mDay + ',OR(' + l + '="",' + l + '>TODAY())),"⏸ Deferred","🔴 Pending")))))']);
+    // Reminder Alert: same as before, but "neglected" now reads the momentum-aware Days Since Logged.
+    alert.push(['=IF(' + b + '="","",IF(' + e + '="Completed","Archived",IF(AND(' + l + '<>"",' + l + '<TODAY()),"🚨 OVERDUE",' +
+      'IF(AND(' + l + '<>"",' + l + '=TODAY()),"⏰ DUE TODAY",IF(AND(' + e + '="Active - Daily",N(' + g + ')>=2),"⚠️ NEGLECTED (2+ Days)","🟢 On Track")))))']);
+  }
+  sh.getRange(FIRST_DATA_ROW, pc.daysSince + 1, n, 1).setFormulas(days);
+  sh.getRange(FIRST_DATA_ROW, pc.goalStatus + 1, n, 1).setFormulas(status);
+  sh.getRange(FIRST_DATA_ROW, pc.alert + 1, n, 1).setFormulas(alert);
+  SpreadsheetApp.flush();
+  return 'Momentum deferral is on';
 }
 
 // ---------- write: voice note ----------
@@ -361,6 +467,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Subscriptions')
     .addItem('Sync calendar reminders now', 'syncSubscriptionReminders')
     .addItem('Set up the Subscription Dashboard tab', 'setupSubscriptionDashboard')
+    .addItem('Turn on momentum deferral', 'setupMomentumDeferral')
     .addToUi();
 }
 
