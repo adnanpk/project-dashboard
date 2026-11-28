@@ -336,7 +336,8 @@ function setupMomentumDeferral() {
   for (let r = FIRST_DATA_ROW; r <= lastRow; r++) {
     const b = 'B' + r, e = col('status') + r, f = 'F' + r, g = col('daysSince') + r, h = col('minsToday') + r, l = col('due') + r;
     // Days Since Logged = calendar days since last log, minus momentum days since then (up to today).
-    days.push(['=IF(' + b + '="","",IF(COUNTIF(' + LB + ',' + b + ')=0,999,LET(last,MAXIFS(' + LA + ',' + LB + ',' + b + '),' +
+    // Never-logged projects count from when the tracker started (2026-11-14) instead of a 999 placeholder.
+    days.push(['=IF(' + b + '="","",IF(COUNTIF(' + LB + ',' + b + ')=0,TODAY()-DATE(2026,11,14),LET(last,MAXIFS(' + LA + ',' + LB + ',' + b + '),' +
       'TODAY()-last-COUNTUNIQUEIFS(' + LA + ',' + M + ',"' + MOMENTUM_MARK + '",' + LA + ',">"&last,' + LA + ',"<="&TODAY()))))']);
     // Today's Goal Status: untouched + momentum day + not due/overdue → ⏸ Deferred.
     status.push(['=IF(' + b + '="","",IF(' + e + '<>"Active - Daily","—",IF(' + h + '>=' + f + ',"✅ Done",IF(' + h + '>0,"⏳ Partial",' +
