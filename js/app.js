@@ -16,6 +16,9 @@ const PICKS = 5;           // "Today's 5"
 const NEGLECT_WARN = 7;    // ⚠ at 7–13 days since last logged
 const NEGLECT_ALERT = 14;  // 🚨 at 14+ days
 const SORTS = ['recent', 'neglected', 'priority', 'due'];
+// Tracking began with this dashboard. A project never logged counts as "not seen since then",
+// so no project can show more days than the dashboard is old (the sheet used to say 999).
+const TRACKING_START = '2026-11-14';
 
 // ---------- storage (never trusted to exist) ----------
 const store = {
@@ -93,9 +96,13 @@ function derive() {
     // Days since last logged: the sheet's "Days Since Logged" column when present, else from the
     // 30-day log the backend sends (null = nothing logged in that window, i.e. 30+ days).
     const sheetDays = p.daysSince != null && p.daysSince !== '' && !isNaN(Number(p.daysSince)) ? Number(p.daysSince) : null;
-    const daysSince = sheetDays != null ? sheetDays : lastWorked ? diffDays(today, lastWorked) : null;
-    const daysKnown = daysSince != null;
-    const daysForScore = daysKnown ? daysSince : 30;
+    const trackedFor = Math.max(0, diffDays(today, TRACKING_START));
+    const rawDays = sheetDays != null ? sheetDays : lastWorked ? diffDays(today, lastWorked) : null;
+    // Never logged (or the old 999 marker): cap at the dashboard's age.
+    const neverLogged = !lastWorked && (rawDays == null || rawDays >= trackedFor);
+    const daysSince = rawDays == null ? trackedFor : Math.min(rawDays, trackedFor);
+    const daysKnown = true;
+    const daysForScore = daysSince;
     const neglect = st.key !== 'active' ? null : daysForScore >= NEGLECT_ALERT ? 'alert' : daysForScore >= NEGLECT_WARN ? 'warn' : null;
     // Priority score: the sheet's formula when present; otherwise priority weight plus neglect.
     const sheetScore = p.priorityScore != null && p.priorityScore !== '' && !isNaN(Number(p.priorityScore)) ? Number(p.priorityScore) : null;
@@ -104,7 +111,7 @@ function derive() {
       st, daily, goal, minsToday, week, weekGoal: goal * 7, entries, dueIn,
       lastWorked,
       lastSeq: lastSeq[p.name] ?? -1,
-      daysSince, daysKnown, daysForScore, neglect, score,
+      daysSince, daysKnown, neverLogged, daysForScore, neglect, score,
       sheetPick: /✅|^\s*(today|yes)\b/i.test(String(p.todayPick || '')),
       pastDue: dueIn != null && dueIn < 0 && st.key !== 'done',
       ring: !daily ? null : minsToday >= goal ? 'green' : minsToday > 0 ? 'amber' : 'red',
@@ -191,15 +198,22 @@ function dueChip(p) {
   if (n === 1) return `<span class="chip amber">${icons.cal}Due tomorrow</span>`;
   return `<span class="chip ${n <= 3 ? 'amber' : 'outline'}">${icons.cal}Due in ${n}d</span>`;
 }
+// "15 days ago" / "2 weeks ago": weeks once it reaches 14 days.
+function agoText(n) {
+  if (n <= 0) return 'today';
+  if (n === 1) return 'yesterday';
+  if (n < 14) return `${n} days ago`;
+  return `${Math.round(n / 7)} weeks ago`;
+}
 function daysText(p) {
-  if (!p.daysKnown) return 'Not logged in 30+ days';
   const n = p.daysSince;
+  if (p.neverLogged) return `Not logged since tracking began (${agoText(n)})`;
   return n <= 0 ? 'Logged today' : n === 1 ? 'Logged yesterday' : `Logged ${n} days ago`;
 }
 // Days since last logged, flagged ⚠ at 7–13 days and 🚨 at 14+ for active projects.
 function daysChip(p, { always = false } = {}) {
   if (p.st.key === 'done') return '';
-  if (p.neglect === 'alert') return `<span class="chip red" title="${attr(daysText(p))}">🚨 ${p.daysKnown ? `${p.daysSince}d` : '30d+'} not seen</span>`;
+  if (p.neglect === 'alert') return `<span class="chip red" title="${attr(daysText(p))}">🚨 ${p.daysSince}d not seen</span>`;
   if (p.neglect === 'warn') return `<span class="chip amber" title="${attr(daysText(p))}">⚠ ${p.daysSince}d not seen</span>`;
   if (!always && p.st.key !== 'active') return '';
   return `<span class="chip outline">${icons.clock}${esc(daysText(p))}</span>`;
@@ -330,7 +344,7 @@ function viewBoard(list) {
       <div class="gt-sub">${sub}</div>
       ${g.key === 'active' && goal ? `<div class="bar ${got >= goal ? 'green' : ''}"><i style="width:${(got / goal) * 100}%"></i></div>` : ''}
       <ul class="gt-list">${items.slice(0, 4).map(p => g.key === 'neglect'
-        ? `<li><span class="nf">${p.neglect === 'alert' ? '🚨' : '⚠'}</span><span>${esc(p.name)}</span><span class="nd tnum">${p.daysKnown ? p.daysSince + 'd' : '30d+'}</span></li>`
+        ? `<li><span class="nf">${p.neglect === 'alert' ? '🚨' : '⚠'}</span><span>${esc(p.name)}</span><span class="nd tnum">${p.daysSince}d</span></li>`
         : `<li>${p.ring ? `<i class="mini-dot ${p.ring}"></i>` : ''}<span>${esc(p.name)}</span></li>`).join('')}${items.length > 4 ? `<li class="more">+${items.length - 4} more</li>` : ''}</ul>
     </button>`;
   }).join('')}</div>`;
